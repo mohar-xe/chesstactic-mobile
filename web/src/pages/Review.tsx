@@ -40,27 +40,38 @@ export default function Review() {
   async function analyze(game: GameRecord) {
     setBusy(game.id);
     setError(null);
-    setStatus('Starting the engine…');
+    setStatus('Preparing engines…');
+
+    let maia: Awaited<ReturnType<typeof loadMaiaEngine>> | null = null;
+    let stockfish: Awaited<ReturnType<typeof createStockfishClient>> | null = null;
     try {
       const rating = await getRating(game.timeClass);
-      const maia = await loadMaiaEngine(profile.engineTier, {
+      maia = await loadMaiaEngine(profile.engineTier, {
         selfElo: rating.rating,
         oppoElo: rating.rating,
       });
 
-      const stockfish = await createStockfishClient();
+      stockfish = await createStockfishClient();
+      const onProgress = (done: number, total: number) => {
+        setStatus(`Analysing… ${done}/${total} moves`);
+      };
+
       let analysis: AnalysisRecord;
       if (stockfish.available) {
         setStatus('Stockfish is analysing the game…');
         analysis = await reviewGame(game, stockfish, maia, {
           depth: profile.analysisDepth,
           playerElo: rating.rating,
+          onProgress,
         });
-        await stockfish.quit();
       } else {
         setStatus('Maia is reviewing the game…');
-        analysis = await reviewGameWithMaia(game, maia, { playerElo: rating.rating });
+        analysis = await reviewGameWithMaia(game, maia, {
+          playerElo: rating.rating,
+          onProgress,
+        });
       }
+
       await saveAnalysis(analysis);
       await refresh();
       setStatus(null);
@@ -68,6 +79,8 @@ export default function Review() {
       setError(err instanceof Error ? err.message : String(err));
       setStatus(null);
     } finally {
+      try { await stockfish?.quit(); } catch { /* ignore */ }
+      try { await maia?.dispose(); } catch { /* ignore */ }
       setBusy(null);
     }
   }
