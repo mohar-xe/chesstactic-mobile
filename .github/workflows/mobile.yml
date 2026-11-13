@@ -25,6 +25,8 @@ jobs:
   android:
     runs-on: ubuntu-latest
     name: Compile Android APK
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
     steps:
       - uses: actions/checkout@v4
 
@@ -38,11 +40,16 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK components
+      - name: Setup Android SDK
         run: |
-          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/build-tools/34.0.0" >> "$GITHUB_PATH"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -75,13 +82,13 @@ jobs:
         run: |
           echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
           APK=$(ls android/app/build/outputs/apk/release/*.apk | head -n 1)
-          "$ANDROID_HOME/build-tools/34.0.0/apksigner" sign \
+          apksigner sign \
             --ks "$RUNNER_TEMP/release.keystore" \
             --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
             --key-pass env:ANDROID_KEY_PASSWORD \
             --ks-key-alias "$ANDROID_KEY_ALIAS" \
             --out patzer-release.apk "$APK"
-          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify patzer-release.apk
+          apksigner verify patzer-release.apk
 
       - name: Collect unsigned APK
         if: ${{ env.ANDROID_KEYSTORE_BASE64 == '' }}
