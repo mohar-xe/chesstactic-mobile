@@ -1,445 +1,241 @@
-// Openings — explore your repertoire as a clickable, collapsible tree.
-// Each node is a (san, position) pair; child counts are pruned to top 8 by
-// frequency on the server. Selecting a node renders its FEN on the mini-board
-// and shows the W/D/L breakdown for that line.
-//
-// The second tab is the opening trainer (components/OpeningTrainer.tsx): drill
-// a built-in line or any line of this tree, with a daily review of your misses.
-
-import { useMemo, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
-import { useTranslation } from 'react-i18next';
-import { useQuery } from '@tanstack/react-query';
-import { BookMarked, ChevronRight, ChevronDown, Compass, GraduationCap, Target } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Chess } from 'chess.js';
+import type { Key } from 'chessground/types';
 import ChessBoard from '../components/ChessBoard';
-import BetaBadge from '../components/BetaBadge';
-import OpeningTrainer, { TRAINER_QUERY_KEY, fetchTrainer } from '../components/OpeningTrainer';
-import { api } from '../api';
-import { useAuth } from '../state/auth';
-
-interface TreeNode {
-  san: string;
-  ply: number;
-  fen: string;
-  eco: string | null;
-  opening_name: string | null;
-  played: number;
-  wins: number;
-  draws: number;
-  losses: number;
-  avg_accuracy: number | null;
-  children: TreeNode[];
-}
-
-interface TreeResponse { total_games: number; root: TreeNode }
-
-const STARTING_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+import {
+  dueMisses, familyOf, listMisses, queueSummary, recordClean, recordMiss,
+  trainerLines, type TrainerLine,
+} from '../analysis/openingTrainer';
+import type { Color, OpeningMissRecord } from '../chess/types';
 
 export default function Openings() {
-  const { t } = useTranslation();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const tab = searchParams.get('tab') === 'trainer' ? 'trainer' : 'tree';
-  // ?line=<id> — straight into one of the built-in lines (the Learn section links here).
-  const startLine = searchParams.get('line');
-  const { data, isLoading } = useQuery({
-    queryKey: ['openings-tree'],
-    queryFn: () => api.get<TreeResponse>('/api/openings/tree'),
-  });
-  const { data: trainer } = useQuery({ queryKey: TRAINER_QUERY_KEY, queryFn: fetchTrainer });
-  // Moves up to the tree node picked with "Practice this line".
-  const [practice, setPractice] = useState<string[] | null>(null);
+  const lines = useMemo(() => trainerLines(), []);
+  const [line, setLine] = useState<TrainerLine | null>(null);
+  const [color, setColor] = useState<Color>('white');
+  const [ply, setPly] = useState(0);
+  const [fen, setFen] = useState('');
+  const [lastMove, setLastMove] = useState<[Key, Key] | undefined>();
+  const [feedback, setFeedback] = useState<{ kind: 'good' | 'bad'; text: string } | null>(null);
+  const [misses, setMisses] = useState<OpeningMissRecord[]>([]);
+  const [due, setDue] = useState<OpeningMissRecord[]>([]);
+  const [summary, setSummary] = useState({ due: 0, learning: 0, learned: 0 });
+  const [family, setFamily] = useState<string>('All');
 
-  function setTab(next: 'tree' | 'trainer') {
-    setSearchParams(next === 'trainer' ? { tab: 'trainer' } : {}, { replace: true });
-  }
+  const refresh = useCallback(async () => {
+    setMisses(await listMisses());
+    setDue(await dueMisses());
+    setSummary(await queueSummary());
+  }, []);
 
-  const tabClass = (active: boolean) => `tab-pill flex items-center gap-1.5 ${active ? 'is-active' : ''}`;
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
 
-  return (
-    <div className="mx-auto max-w-7xl space-y-5">
-      <header className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h1 className="page-h1 flex items-center gap-2">
-            <BookMarked className="h-6 w-6 text-gold-600" />
-            {t('openings.title', { defaultValue: 'Openings' })}
-          </h1>
-          <p className="page-sub">{t('openings.subtitle', { defaultValue: 'Your repertoire as a tree.' })}</p>
-        </div>
-        {tab === 'tree' && !!data?.total_games && (
-          <div className="text-xs text-chesscom-500">
-            {t('openings.totalGames', { defaultValue: '{{n}} games in repertoire', n: data.total_games })}
-          </div>
-        )}
-      </header>
+  const families = useMemo(() => {
+    const set = new Set(lines.map(familyOf));
+    return ['All', ...[...set].sort()];
+  }, [lines]);
 
-      <div role="tablist" className="flex gap-1 border-b border-chesscom-200 dark:border-chesscom-700">
-        <button role="tab" aria-selected={tab === 'tree'} onClick={() => setTab('tree')} className={tabClass(tab === 'tree')}>
-          <Compass className="h-4 w-4" /> {t('openings.tabs.tree')}
-        </button>
-        <button role="tab" aria-selected={tab === 'trainer'} onClick={() => setTab('trainer')} className={tabClass(tab === 'trainer')}>
-          <GraduationCap className="h-4 w-4" /> {t('openings.tabs.trainer')}
-          <BetaBadge />
-          {!!trainer?.due && (
-            <span className="badge bg-gold-500/15 font-mono tabular-nums text-gold-700 dark:text-gold-300">{trainer.due}</span>
-          )}
-        </button>
-      </div>
-
-      {tab === 'trainer' ? (
-        <OpeningTrainer
-          repertoirePrefix={practice}
-          onClearRepertoire={() => setPractice(null)}
-          startLine={startLine}
-          onStartLineUsed={() => setSearchParams({ tab: 'trainer' }, { replace: true })}
-        />
-      ) : isLoading ? (
-        <Skeleton />
-      ) : (
-        <RepertoireTree data={data} onPractice={(moves) => { setPractice(moves); setTab('trainer'); }} onTrainer={() => setTab('trainer')} />
-      )}
-    </div>
+  const visible = useMemo(
+    () => (family === 'All' ? lines : lines.filter((l) => familyOf(l) === family)),
+    [lines, family],
   );
-}
 
-function RepertoireTree({ data, onPractice, onTrainer }: {
-  data: TreeResponse | undefined;
-  onPractice: (moves: string[]) => void;
-  onTrainer: () => void;
-}) {
-  const { t } = useTranslation();
-  const { user } = useAuth();
-
-  // Build a path key for each node so we can address it without referencing the object directly.
-  // Path "" means root. Otherwise it's the joined SANs from root.
-  const [selectedPath, setSelectedPath] = useState<string>('');
-  const [expanded, setExpanded] = useState<Set<string>>(new Set(['']));
-
-  const root = data?.root ?? null;
-  const selectedNode = useMemo(() => {
-    if (!root) return null;
-    return findNodeByPath(root, selectedPath);
-  }, [root, selectedPath]);
-
-  function toggle(path: string) {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
-      return next;
-    });
+  function start(selected: TrainerLine, side: Color) {
+    setLine(selected);
+    setColor(side);
+    setPly(0);
+    setFen(new Chess().fen());
+    setLastMove(undefined);
+    setFeedback(null);
   }
 
-  function onClickNode(node: TreeNode, path: string) {
-    setSelectedPath(path);
-    // Toggle expansion for non-leaves
-    if (node.children.length > 0) {
-      // Make sure clicking auto-expands (don't just toggle if currently closed)
-      setExpanded((prev) => {
-        const next = new Set(prev);
-        if (next.has(path)) next.delete(path);
-        else next.add(path);
-        return next;
+  async function onMove(uci: string) {
+    if (!line) return;
+    const expected = line.moves[ply];
+    if (!expected) return;
+
+    const fenBefore = fen;
+    const chess = new Chess(fenBefore);
+    let played;
+    try {
+      played = chess.move({
+        from: uci.slice(0, 2),
+        to: uci.slice(2, 4),
+        promotion: uci.slice(4) || undefined,
       });
+    } catch {
+      played = null;
     }
+    if (!played) return;
+
+    if (uci !== expected.uci) {
+      setFeedback({
+        kind: 'bad',
+        text: `That is ${played.san}. The line continues with ${expected.san}.`,
+      });
+      await recordMiss(line, ply, color);
+      await refresh();
+      return;
+    }
+
+    setFen(chess.fen());
+    setLastMove([played.from as Key, played.to as Key]);
+    setFeedback({ kind: 'good', text: `${played.san} — correct.` });
+    await recordClean(line, ply, color);
+
+    const reply = line.moves[ply + 1];
+    if (reply) {
+      const after = new Chess(chess.fen());
+      try {
+        after.move({
+          from: reply.uci.slice(0, 2),
+          to: reply.uci.slice(2, 4),
+          promotion: reply.uci.slice(4) || undefined,
+        });
+        setTimeout(() => {
+          setFen(after.fen());
+          setLastMove([reply.uci.slice(0, 2) as Key, reply.uci.slice(2, 4) as Key]);
+          setPly(ply + 2);
+        }, 400);
+      } catch {
+        setPly(ply + 1);
+      }
+      return;
+    }
+
+    setTimeout(() => {
+      setPly(ply + 1);
+      setFeedback({ kind: 'good', text: 'Line complete.' });
+    }, 400);
   }
 
-  if (!data || data.total_games === 0 || !root) {
+  /* ------------------------------------------------------------ render -- */
+
+  if (line) {
+    const progress = line.moves.slice(0, Math.min(ply, line.moves.length)).map((m) => m.san).join(' ');
+    const yourTurn = line.moves[ply]?.color === color;
+
     return (
-      <div className="card flex flex-col items-center gap-2 p-10 text-center">
-        <Compass className="h-8 w-8 text-chesscom-400" />
-        <div className="text-base font-semibold">
-          {t('openings.empty', { defaultValue: 'No opening data yet' })}
-        </div>
-        <div className="max-w-md text-sm text-chesscom-500">
-          {t('openings.emptyDesc', { defaultValue: 'Import or analyze a few games and your repertoire will branch out here.' })}
-        </div>
-        <div className="mt-2 flex flex-wrap justify-center gap-2">
-          <Link to="/review" className="btn-primary text-sm">
-            {t('review.title')}
-          </Link>
-          <button onClick={onTrainer} className="btn-secondary text-sm">
-            <GraduationCap className="h-4 w-4" /> {t('openings.emptyTrainer')}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
-      {/* Tree pane */}
-      <section className="card overflow-hidden">
-        <div className="flex items-center gap-2 border-b border-chesscom-200 px-4 py-3 dark:border-chesscom-700">
-          <Compass className="h-4 w-4 text-board-dark" />
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-chesscom-500">
-            {t('openings.tree', { defaultValue: 'Repertoire tree' })}
-          </h2>
-        </div>
-        <div className="max-h-[70vh] overflow-y-auto p-2">
-          <TreeRow
-            node={root}
-            path=""
-            depth={0}
-            expanded={expanded}
-            selectedPath={selectedPath}
-            onToggle={toggle}
-            onSelect={onClickNode}
-            isRoot
-          />
-        </div>
-      </section>
-
-      {/* Detail pane */}
-      <aside className="space-y-3">
-        <div className={`board-theme-${user?.profile.board_theme ?? 'green'}`}>
-          <ChessBoard
-            fen={selectedNode?.fen || STARTING_FEN}
-            movable={false}
-            size={undefined}
-          />
-        </div>
-
-        <DetailCard
-          node={selectedNode}
-          onPractice={() => onPractice(selectedPath ? selectedPath.split('|') : [])}
-        />
-      </aside>
-    </div>
-  );
-}
-
-function TreeRow({
-  node, path, depth, expanded, selectedPath, onToggle, onSelect, isRoot = false,
-  parentOpeningName = null,
-}: {
-  node: TreeNode;
-  path: string;
-  depth: number;
-  expanded: Set<string>;
-  selectedPath: string;
-  onToggle: (path: string) => void;
-  onSelect: (n: TreeNode, path: string) => void;
-  isRoot?: boolean;
-  parentOpeningName?: string | null;
-}) {
-  const { t } = useTranslation();
-  const isExpanded = expanded.has(path);
-  const hasChildren = node.children.length > 0;
-  const isSelected = selectedPath === path;
-  // Show opening_name if it changed from parent (avoid repetition down a line).
-  const showName = !isRoot && node.opening_name && node.opening_name !== parentOpeningName;
-
-  const total = node.played || 1;
-  const score = (node.wins + 0.5 * node.draws) / total;
-  const scoreTone =
-    score >= 0.55
-      ? 'bg-board-dark/15 text-board-dark'
-      : score <= 0.4
-      ? 'bg-mistake/15 text-mistake'
-      : 'bg-chesscom-100 text-chesscom-600 dark:bg-chesscom-700/40 dark:text-chesscom-300';
-
-  // Heuristic: server caps children to 8. Show "+ N more" hint when there
-  // were likely pruned siblings: when children_total < node.played and there
-  // are exactly 8 children. We can't know the true count from the API, so we
-  // approximate by checking sum-of-children-played vs this node's played.
-  const childPlayedSum = node.children.reduce((a, c) => a + c.played, 0);
-  const prunedHint = node.children.length >= 8 && childPlayedSum < node.played;
-
-  return (
-    <div>
-      <div
-        role="button"
-        tabIndex={0}
-        onClick={() => (hasChildren ? onSelect(node, path) : onSelect(node, path))}
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(node, path); } }}
-        className={`group flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors ${
-          isSelected
-            ? 'bg-gold-500/15 text-chesscom-900 dark:text-chesscom-100'
-            : 'text-chesscom-700 hover:bg-chesscom-100/60 dark:text-chesscom-200 dark:hover:bg-chesscom-700/40'
-        }`}
-        style={{ paddingLeft: `${8 + depth * 14}px` }}
-      >
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); if (hasChildren) onToggle(path); }}
-          className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-chesscom-400 hover:text-chesscom-700 dark:hover:text-chesscom-200"
-          aria-label={isExpanded ? 'collapse' : 'expand'}
-        >
-          {hasChildren ? (isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />) : null}
-        </button>
-
-        {isRoot ? (
-          <span className="font-semibold text-chesscom-700 dark:text-chesscom-200">
-            {t('openings.startPosition', { defaultValue: 'Start position' })}
-          </span>
-        ) : (
-          <>
-            <span className="font-mono text-[13px] tabular-nums text-chesscom-700 dark:text-chesscom-100">
-              {moveNumberPrefix(node.ply)}{node.san}
-            </span>
-            {node.eco && (
-              <span className="rounded bg-chesscom-100 px-1 py-px font-mono text-[11px] text-chesscom-600 dark:bg-chesscom-900/60 dark:text-chesscom-300">
-                {node.eco}
-              </span>
-            )}
-            {showName && (
-              <span className="truncate text-xs text-chesscom-500">{node.opening_name}</span>
-            )}
-          </>
-        )}
-
-        <span className="ml-auto flex shrink-0 items-center gap-2">
-          <span className="font-mono text-xs tabular-nums text-chesscom-500">{node.played}g</span>
-          <span className={`rounded px-1.5 py-0.5 font-mono text-[11px] tabular-nums ${scoreTone}`}>
-            {Math.round(score * 100)}%
-          </span>
-        </span>
-      </div>
-
-      {hasChildren && isExpanded && (
-        <div>
-          {node.children.map((child) => {
-            const childPath = path ? `${path}|${child.san}` : child.san;
-            return (
-              <TreeRow
-                key={childPath}
-                node={child}
-                path={childPath}
-                depth={depth + 1}
-                expanded={expanded}
-                selectedPath={selectedPath}
-                onToggle={onToggle}
-                onSelect={onSelect}
-                parentOpeningName={node.opening_name}
-              />
-            );
-          })}
-          {prunedHint && (
-            <div
-              className="text-xs italic text-chesscom-400"
-              style={{ paddingLeft: `${8 + (depth + 1) * 14 + 18}px` }}
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="space-y-3">
+          <header className="flex items-baseline justify-between gap-2">
+            <div>
+              <h1 className="text-xl font-semibold">{line.name}</h1>
+              <p className="text-sm text-slate-400">{line.eco} · you play {color}</p>
+            </div>
+            <button
+              type="button"
+              className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/20"
+              onClick={() => setLine(null)}
             >
-              {t('openings.moreBranches', { defaultValue: '+ more branches (rare lines hidden)' })}
+              Change line
+            </button>
+          </header>
+
+          <div className="rounded-xl bg-[#312e2b] p-2">
+            <ChessBoard
+              fen={fen}
+              orientation={color}
+              movable={yourTurn}
+              turnColor={yourTurn ? color : color === 'white' ? 'black' : 'white'}
+              onMove={(uci) => void onMove(uci)}
+              lastMove={lastMove}
+            />
+          </div>
+
+          {feedback && (
+            <div
+              className={`rounded-lg border px-3 py-2 text-sm ${
+                feedback.kind === 'good'
+                  ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                  : 'border-amber-500/40 bg-amber-500/10 text-amber-300'
+              }`}
+            >
+              {feedback.text}
             </div>
           )}
-        </div>
-      )}
-    </div>
-  );
-}
 
-function DetailCard({ node, onPractice }: { node: TreeNode | null; onPractice: () => void }) {
-  const { t } = useTranslation();
-  if (!node) {
-    return (
-      <div className="card p-4 text-center text-sm text-chesscom-400">
-        {t('openings.selectPrompt', { defaultValue: 'Click a node in the tree to inspect it.' })}
+          <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3 text-sm">
+            <div className="text-slate-400">Line so far</div>
+            <div className="mt-1 font-mono text-xs leading-relaxed">{progress || '—'}</div>
+          </div>
+        </div>
+
+        <aside className="space-y-3">
+          <div className="rounded-xl border border-white/10 bg-white/[0.02] p-3 text-sm">
+            <div className="text-slate-400">Your queue</div>
+            <div className="mt-1">{summary.due} due · {summary.learning} to learn</div>
+          </div>
+        </aside>
       </div>
     );
   }
-  const total = node.played || 1;
-  const score = (node.wins + 0.5 * node.draws) / total;
-  const scoreTone =
-    score >= 0.55
-      ? 'text-board-dark'
-      : score <= 0.4
-      ? 'text-mistake'
-      : 'text-chesscom-700 dark:text-chesscom-100';
-
-  const reviewHref = node.opening_name
-    ? `/review?q=${encodeURIComponent(node.opening_name)}`
-    : node.eco
-    ? `/review?q=${encodeURIComponent(node.eco)}`
-    : '/review';
 
   return (
-    <div className="card space-y-3 p-4">
-      <div>
-        <div className="flex items-center gap-2">
-          {node.eco && (
-            <span className="rounded bg-chesscom-100 px-1.5 py-0.5 font-mono text-[11px] text-chesscom-600 dark:bg-chesscom-900/60 dark:text-chesscom-300">
-              {node.eco}
-            </span>
-          )}
-          <div className="truncate text-sm font-semibold text-chesscom-900 dark:text-chesscom-100">
-            {node.opening_name || t('openings.unknownLine', { defaultValue: 'Untheorized line' })}
+    <div className="space-y-5">
+      <header>
+        <h1 className="text-xl font-semibold">Opening trainer</h1>
+        <p className="mt-1 text-sm text-slate-400">
+          Play the openings you keep getting wrong. The trainer plays your opponent's side of the
+          line; a move you get wrong comes back tomorrow.
+        </p>
+      </header>
+
+      <section className="flex flex-wrap items-center gap-2">
+        <div className="flex gap-2">
+          {(['white', 'black'] as Color[]).map((side) => (
+            <button
+              key={side}
+              type="button"
+              onClick={() => setColor(side)}
+              className={`rounded-lg border px-3 py-1.5 text-sm capitalize ${
+                color === side ? 'border-[#ffc934] bg-[#ffc934]/15' : 'border-white/15'
+              }`}
+            >
+              {side}
+            </button>
+          ))}
+        </div>
+        <select
+          className="rounded-lg border border-white/15 bg-black/30 px-3 py-2 text-sm"
+          value={family}
+          onChange={(e) => setFamily(e.target.value)}
+        >
+          {families.map((f) => (
+            <option key={f} value={f}>{f}</option>
+          ))}
+        </select>
+      </section>
+
+      {summary.learning > 0 && (
+        <section className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 text-sm">
+          <div className="font-medium">
+            {summary.due} opening {summary.due === 1 ? 'miss' : 'misses'} to review
           </div>
-        </div>
-        {node.ply > 0 && (
-          <div className="mt-1 font-mono text-xs tabular-nums text-chesscom-500">
-            {t('openings.afterMove', { defaultValue: 'after {{san}}', san: `${moveNumberPrefix(node.ply)}${node.san}` })}
-          </div>
-        )}
-      </div>
+          <ul className="mt-2 space-y-1 text-xs text-slate-400">
+            {due.slice(0, 5).map((miss) => (
+              <li key={miss.id}>
+                {miss.lineName} — expected {miss.expectedSan} ({miss.misses}×
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
-      <div className="grid grid-cols-3 gap-2 text-center text-xs">
-        <div className="rounded-md bg-board-dark/10 px-2 py-2">
-          <div className="text-[11px] uppercase tracking-wide text-chesscom-500">{t('openings.wins', { defaultValue: 'Wins' })}</div>
-          <div className="font-mono text-lg font-bold tabular-nums text-board-dark">{node.wins}</div>
-        </div>
-        <div className="rounded-md bg-chesscom-100/60 px-2 py-2 dark:bg-chesscom-700/40">
-          <div className="text-[11px] uppercase tracking-wide text-chesscom-500">{t('openings.draws', { defaultValue: 'Draws' })}</div>
-          <div className="font-mono text-lg font-bold tabular-nums text-chesscom-700 dark:text-chesscom-200">{node.draws}</div>
-        </div>
-        <div className="rounded-md bg-mistake/10 px-2 py-2">
-          <div className="text-[11px] uppercase tracking-wide text-chesscom-500">{t('openings.losses', { defaultValue: 'Losses' })}</div>
-          <div className="font-mono text-lg font-bold tabular-nums text-mistake">{node.losses}</div>
-        </div>
-      </div>
-
-      <div className="flex items-center justify-between text-xs">
-        <span className="text-chesscom-500">{t('openings.score', { defaultValue: 'Score' })}</span>
-        <span className={`font-mono tabular-nums ${scoreTone}`}>{Math.round(score * 100)}%</span>
-      </div>
-      <div className="flex items-center justify-between text-xs">
-        <span className="text-chesscom-500">{t('openings.avgAccuracy', { defaultValue: 'Avg accuracy' })}</span>
-        <span className="font-mono tabular-nums text-chesscom-700 dark:text-chesscom-100">
-          {node.avg_accuracy != null ? `${node.avg_accuracy.toFixed(1)}%` : '—'}
-        </span>
-      </div>
-      <div className="flex items-center justify-between text-xs">
-        <span className="text-chesscom-500">{t('openings.played', { defaultValue: 'Played' })}</span>
-        <span className="font-mono tabular-nums text-chesscom-700 dark:text-chesscom-100">{node.played}</span>
-      </div>
-
-      <button onClick={onPractice} className="btn-primary w-full text-sm">
-        <GraduationCap className="h-4 w-4" />
-        {t('openings.practiceLine')}
-      </button>
-      <Link to={reviewHref} className="btn-secondary w-full text-sm">
-        <Target className="h-4 w-4" />
-        {t('openings.trainCta', { defaultValue: 'Train these →' })}
-      </Link>
-    </div>
-  );
-}
-
-function findNodeByPath(root: TreeNode, path: string): TreeNode | null {
-  if (path === '') return root;
-  const sans = path.split('|');
-  let cur: TreeNode | undefined = root;
-  for (const san of sans) {
-    if (!cur) return null;
-    cur = cur.children.find((c) => c.san === san);
-  }
-  return cur ?? null;
-}
-
-function moveNumberPrefix(ply: number): string {
-  if (ply <= 0) return '';
-  // ply 1 -> "1." (white), ply 2 -> "1...", ply 3 -> "2.", etc.
-  const move = Math.ceil(ply / 2);
-  return ply % 2 === 1 ? `${move}.` : `${move}…`;
-}
-
-function Skeleton() {
-  return (
-    <div className="grid animate-pulse gap-4 lg:grid-cols-[1.4fr_1fr]">
-      <div className="h-[60vh] rounded-xl bg-chesscom-200 dark:bg-chesscom-700" />
-      <div className="space-y-3">
-        <div className="aspect-square rounded-xl bg-chesscom-200 dark:bg-chesscom-700" />
-        <div className="h-40 rounded-xl bg-chesscom-200 dark:bg-chesscom-700" />
-      </div>
+      <section className="grid gap-2 sm:grid-cols-2">
+        {visible.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => start(item, color)}
+            className="rounded-xl border border-white/10 bg-white/[0.02] p-3 text-left transition hover:border-[#ffc934]/50 hover:bg-white/[0.05]"
+          >
+            <div className="text-sm font-medium">{item.name}</div>
+            <div className="text-xs text-slate-500">{item.eco} · {item.moves.length} plies</div>
+          </button>
+        ))}
+      </section>
     </div>
   );
 }

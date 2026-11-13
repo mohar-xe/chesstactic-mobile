@@ -6,14 +6,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { ArrowLeft, ArrowRight, Check, GraduationCap, Play, RotateCcw, Star, Trophy } from 'lucide-react';
-import { api } from '../api';
+import { useLessonProgress } from '../storage/lessons';
 import { normalizeLanguage } from '../lib/languages';
 import { cn } from '../lib/utils';
 import BetaBadge from '../components/BetaBadge';
-import LessonPlayer, { LEARN_QUERY_KEY } from '../components/learn/LessonPlayer';
+import LessonPlayer from '../components/learn/LessonPlayer';
 import LessonIcon, { LEVEL_COLORS, PieceIcon } from '../components/learn/LessonIcon';
 import { loadCurriculum, loadLearnTexts, type Curriculum, type LessonRef } from '../learn/content';
 import { levelOf, levelPiece } from '../learn/engine';
@@ -27,8 +26,6 @@ export interface LessonProgress {
   completed_at: string | null;
   updated_at: string;
 }
-
-export const fetchLearnProgress = () => api.get<{ lessons: LessonProgress[] }>('/api/learn');
 
 /** Curriculum + lesson texts in the current language, loaded on demand. */
 export function useLearnContent(): { cur: Curriculum | null; failed: boolean } {
@@ -62,9 +59,13 @@ export default function Learn() {
   const lessonId = params.get('lesson');
   const courseId = params.get('course');
   const { cur, failed } = useLearnContent();
-  const { data, isLoading, isError } = useQuery({ queryKey: LEARN_QUERY_KEY, queryFn: fetchLearnProgress });
+  const stored = useLessonProgress((s) => s.progress);
+  const loadProgress = useLessonProgress((s) => s.load);
+  const loaded = useLessonProgress((s) => s.loaded);
 
-  const progress = useMemo(() => new Map((data?.lessons ?? []).map((r) => [r.lesson_id, r])), [data]);
+  useEffect(() => { void loadProgress(); }, [loadProgress]);
+
+  const progress = useMemo(() => stored, [stored]);
   // Only lessons that still exist count (a lesson could be renamed one day).
   const totalStars = useMemo(
     () => (cur ? [...progress.values()].filter((p) => cur.byId.has(p.lesson_id)).reduce((s, p) => s + p.stars, 0) : 0),
@@ -73,8 +74,8 @@ export default function Learn() {
 
   useEffect(() => { window.scrollTo({ top: 0 }); }, [lessonId, courseId]);
 
-  if (failed || isError) return <div className="card p-10 text-center text-sm text-move-mistake">{t('learn.loadError')}</div>;
-  if (!cur || isLoading) return <div className="card p-10 text-center text-sm text-chesscom-500">{t('common.loading')}</div>;
+  if (failed) return <div className="card p-10 text-center text-sm text-move-mistake">{t('learn.loadError')}</div>;
+  if (!cur || !loaded) return <div className="card p-10 text-center text-sm text-chesscom-500">{t('common.loading')}</div>;
 
   const openLesson = (id: string) => setParams({ lesson: id });
   const openCourse = (id: string) => setParams({ course: id });

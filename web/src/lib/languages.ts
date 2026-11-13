@@ -1,39 +1,16 @@
-// Single source of truth for the UI languages. Adding a language = one entry
-// here + a locale JSON + the server-side zod enums (grep for `'es'` in
-// server/src/routes). Everything else (toggles, TTS, signup default) iterates
-// this list.
-export type Language = 'en' | 'bg' | 'es' | 'de' | 'ru';
+// The single UI language. Kept as a module so the rest of the code can still
+// ask for "the user's language" without the plumbing of a detector.
 
-export interface LanguageInfo {
-  code: Language;
-  /** Short badge used in the EN / BG / ES toggles. */
-  short: string;
-  /** The language's name in itself ("Deutsch", "Български"). Every picker
-   *  shows this, never a translation: someone who switched to a language they
-   *  can't read must still be able to find their own to switch back. */
-  native: string;
-  /** BCP-47 tag handed to the Web Speech API. */
-  bcp47: string;
-}
+export type Language = 'en';
 
-export const LANGUAGES: readonly LanguageInfo[] = [
+export const LANGUAGE_CODES: Language[] = ['en'];
+
+export const LANGUAGES: { code: Language; short: string; native: string; bcp47: string }[] = [
   { code: 'en', short: 'EN', native: 'English', bcp47: 'en-US' },
-  { code: 'bg', short: 'BG', native: 'Български', bcp47: 'bg-BG' },
-  { code: 'es', short: 'ES', native: 'Español', bcp47: 'es-ES' },
-  { code: 'de', short: 'DE', native: 'Deutsch', bcp47: 'de-DE' },
-  { code: 'ru', short: 'RU', native: 'Русский', bcp47: 'ru-RU' },
-] as const;
+];
 
-export const LANGUAGE_CODES: readonly Language[] = LANGUAGES.map((l) => l.code);
-
-export function isLanguage(v: unknown): v is Language {
-  return typeof v === 'string' && (LANGUAGE_CODES as readonly string[]).includes(v);
-}
-
-/** Map whatever i18next detected ("es-MX", "bg", "en-GB"…) onto a supported code. */
-export function normalizeLanguage(detected: string | undefined | null): Language {
-  const base = (detected ?? '').toLowerCase().split('-')[0];
-  return isLanguage(base) ? base : 'en';
+export function normalizeLanguage(value: unknown): Language {
+  return 'en';
 }
 
 export function bcp47For(lang: Language): string {

@@ -7,7 +7,6 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
-import { useQueryClient } from '@tanstack/react-query';
 import { Chess, type Move } from 'chess.js';
 import type { DrawShape } from 'chessground/draw';
 import type { Key } from 'chessground/types';
@@ -17,8 +16,9 @@ import {
 import LessonBoard, { type Flash } from './LessonBoard';
 import { LogoMark } from '../Logo';
 import LessonIcon, { PieceIcon } from './LessonIcon';
-import { api } from '../../api';
-import { useAuth } from '../../state/auth';
+import { useProfile } from '../../storage/profile';
+import { useLessonProgress } from '../../storage/lessons';
+import { engineBestMove } from '../../engine/bestMove';
 import i18n from '../../i18n';
 import { normalizeLanguage } from '../../lib/languages';
 import { playSound, soundForMove } from '../../lib/sounds';
@@ -45,8 +45,8 @@ type Tone = 'neutral' | 'good' | 'bad' | 'hint';
  *  lesson has one — the same lesson in simpler words, not a separate tree. */
 function useLessonText(lessonId: string) {
   const { t } = useTranslation('learn');
-  const { user } = useAuth();
-  const kid = user?.profile.audience === 'kid';
+  const profile = useProfile((s) => s.profile);
+  const kid = profile.kidMode;
   const has = useCallback((key: string) => i18n.exists(`${lessonId}.${key}`, { ns: 'learn' }), [lessonId]);
   const text = useCallback((key: string, opts?: Record<string, unknown>) => {
     const full = `${lessonId}.${key}`;
@@ -79,11 +79,11 @@ function Frame({ board, text, tone = 'neutral', note, actions, extra, choices }:
   choices?: React.ReactNode;
 }) {
   const { header, next, speakText } = useContext(FrameContext);
-  const { user } = useAuth();
+  const profile = useProfile((s) => s.profile);
   return (
     <div className="grid gap-3 lg:grid-cols-[minmax(0,600px)_minmax(300px,380px)] lg:grid-rows-[auto_1fr] lg:justify-center lg:gap-x-5 lg:gap-y-3">
       <div className="order-2 mx-auto w-full max-w-[600px] lg:order-1 lg:row-span-2">
-        <div className={`board-theme-${user?.profile.board_theme ?? 'green'}`}>{board}</div>
+        <div className={`board-theme-${profile.boardTheme}`}>{board}</div>
       </div>
       <div className="order-1 space-y-3 lg:order-2">
         {header}
@@ -243,8 +243,8 @@ export interface PlayerProps {
 export default function LessonPlayer({ refInfo, resume, bestStars, totalStars, next, onOpenLesson, onExit }: PlayerProps) {
   const { t } = useTranslation();
   const { t: tl } = useTranslation('learn');
-  const { user } = useAuth();
-  const qc = useQueryClient();
+  const profile = useProfile((s) => s.profile);
+  const saveProgress = useLessonProgress((s) => s.save);
   const { lesson, course, level } = refInfo;
   const { text, has } = useLessonText(lesson.id);
   const steps = lesson.steps;
@@ -272,23 +272,30 @@ export default function LessonPlayer({ refInfo, resume, bestStars, totalStars, n
   useEffect(() => { window.scrollTo({ top: 0 }); }, [index, finished]);
   useEffect(() => () => cancelSpeech(), []);
 
-  const save = useCallback((body: object) => {
-    api.post(`/api/learn/${lesson.id}`, body)
-      .then(() => {
-        void qc.invalidateQueries({ queryKey: LEARN_QUERY_KEY });
-        void qc.invalidateQueries({ queryKey: ['achievements-home'] });
-        void qc.invalidateQueries({ queryKey: ['achievements'] });
-      })
-      .catch(() => { /* progress is a nicety; never interrupt a lesson for it */ });
-  }, [lesson.id, qc]);
+  const save = useCallback((body: { step?: number; flawed?: number; stars?: number }) => {
+    // Progress is a nicety — never interrupt a lesson if the write fails.
+    void saveProgress({
+      lessonId: lesson.id,
+      step: body.step ?? index,
+      flawed: body.flawed ?? 0,
+      stars: body.stars ?? 0,
+      completedAt: body.stars ? Date.now() : null,
+      updatedAt: Date.now(),
+    }).catch(() => undefined);
+  }, [lesson.id, index, saveProgress]);
 
   const speakText = useCallback((s: string) => {
     const ui = normalizeLanguage(i18n.language);
     // Speak in the language the text is actually in (a lesson without its
     // own translation reads English).
     const lang = i18n.hasResourceBundle(ui, 'learn') ? ui : 'en';
-    speak(s.replace(/\*\*/g, ''), { lang, voice: user?.profile.tts_voice, rate: user?.profile.tts_rate, pitch: user?.profile.tts_pitch });
-  }, [user]);
+    speak(s.replace(/\*\*/g, ''), {
+      lang,
+      voice: profile.ttsVoice,
+      rate: profile.ttsRate,
+      pitch: profile.ttsPitch,
+    });
+  }, [profile.ttsVoice, profile.ttsRate, profile.ttsPitch]);
 
   function advance() {
     if (!solved) return;
@@ -333,7 +340,7 @@ export default function LessonPlayer({ refInfo, resume, bestStars, totalStars, n
   // Auto-read each new step aloud when the profile has text-to-speech on —
   // the same words the bubble shows (puzzles share the lesson's task text).
   useEffect(() => {
-    if (finished || !user?.profile.tts_enabled) return;
+    if (finished || !profile.ttsEnabled) return;
     if (step.type === 'move' && !has(step.id)) {
       const side = t(sideToMove(moveStepStart(step).fen) === 'white' ? 'learn.white' : 'learn.black');
       speakText(text('task', { side }));
@@ -840,24 +847,16 @@ function PlayView({ step, lessonId, onSolved, onReopen }: StepProps<PlayStep>) {
   const [resetKey, setResetKey] = useState(0);
   // Bumped by "Try again": an engine answer for the previous run is dropped.
   const runRef = useRef(0);
+  const profile = useProfile((s) => s.profile);
 
   const over = result !== null;
   const dests = useMemo(() => (!over && !thinking && !engineDown ? legalDests(fen) : null), [fen, over, thinking, engineDown]);
 
   async function bestMove(position: string, depth: number): Promise<string> {
-    // The server analyses one position per user at a time; a request still
-    // running (e.g. from leaving and reopening the lesson) is waited out.
-    for (let attempt = 0; ; attempt++) {
-      try {
-        const r = await api.post<{ lines: { uci: string }[] }>('/api/analyze/position', { fen: position, depth, lines: 1 });
-        const uci = r.lines[0]?.uci;
-        if (!uci) throw new Error('no_move');
-        return uci;
-      } catch (e) {
-        if ((e as Error).message !== 'already_analyzing' || attempt >= 5) throw e;
-        await new Promise((r) => window.setTimeout(r, 800));
-      }
-    }
+    // Stockfish on Android, Maia-3 everywhere else.
+    const uci = await engineBestMove(position, { depth, modelId: profile.engineTier });
+    if (!uci) throw new Error('no_engine');
+    return uci;
   }
 
   function finish(res: PlayResult) {

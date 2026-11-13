@@ -1,15 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { createInstance } from 'i18next';
 import en from './en.json';
-import de from './de.json';
 import learnEn from './learn/en.json';
-import learnDe from './learn/de.json';
-import learnRu from './learn/ru.json';
-import ru from './ru.json';
-import bg from './bg.json';
-import es from './es.json';
 import { loadLearnTexts } from '../learn/content';
-import { goalText } from '../lib/goalText';
 
 type Tree = { [k: string]: string | Tree };
 
@@ -22,131 +14,47 @@ function flatten(tree: Tree, prefix = ''): Record<string, string> {
   return out;
 }
 
-const placeholders = (s: string) => (s.match(/{{\s*\w+\s*}}/g) ?? []).sort();
+// The app ships one language. These checks make sure the English bundle is
+// complete and internally consistent — a missing key shows up as the raw key
+// on screen, and a lost placeholder shows up as "undefined".
+describe('en locale', () => {
+  const flat = flatten(en as Tree);
 
-// i18next silently falls back to English for a missing key, so a gap in a
-// locale never shows up as an error — only as an English word in the middle
-// of a German screen. Pin German to full parity with English.
-describe('de locale', () => {
-  const enFlat = flatten(en as Tree);
-  const deFlat = flatten(de as Tree);
-
-  it('has every key that en has, and nothing else', () => {
-    expect(Object.keys(deFlat).sort()).toEqual(Object.keys(enFlat).sort());
+  it('has no empty strings', () => {
+    for (const [key, value] of Object.entries(flat)) {
+      expect(value.trim().length, key).toBeGreaterThan(0);
+    }
   });
 
-  it('keeps every interpolation placeholder', () => {
-    for (const key of Object.keys(enFlat)) {
-      expect(placeholders(deFlat[key] ?? ''), key).toEqual(placeholders(enFlat[key]!));
+  it('keeps every interpolation placeholder self-consistent', () => {
+    for (const [key, value] of Object.entries(flat)) {
+      const open = (value.match(/{{/g) ?? []).length;
+      const close = (value.match(/}}/g) ?? []).length;
+      expect(open, key).toBe(close);
     }
   });
 });
 
-// Lesson texts have their own namespace; missing keys must not silently put
-// English sentences into a translated lesson.
-describe.each([['de', learnDe], ['ru', learnRu]] as const)('%s lesson texts', (lang, texts) => {
-  const enFlat = flatten(learnEn as Tree);
-  const translated = flatten(texts as Tree);
+describe('en lesson texts', () => {
+  const flat = flatten(learnEn as Tree);
 
-  it('has every key that en has, and nothing else', () => {
-    expect(Object.keys(translated).sort()).toEqual(Object.keys(enFlat).sort());
-  });
-
-  it('keeps every placeholder and every bold mark', () => {
-    for (const key of Object.keys(enFlat)) {
-      expect(placeholders(translated[key] ?? ''), key).toEqual(placeholders(enFlat[key]!));
-      // **bold** pairs must stay pairs, or the markers would show as text.
-      expect((translated[key]!.match(/\*\*/g) ?? []).length % 2, key).toBe(0);
+  it('has no empty strings', () => {
+    for (const [key, value] of Object.entries(flat)) {
+      expect(value.trim().length, key).toBeGreaterThan(0);
     }
   });
 
-  it('loads the translated namespace used by lessons', async () => {
-    await loadLearnTexts(lang);
+  it('keeps every bold mark in pairs', () => {
+    for (const [key, value] of Object.entries(flat)) {
+      expect((value.match(/\*\*/g) ?? []).length % 2, key).toBe(0);
+    }
+  });
+
+  it('loads the namespace the lessons read from', async () => {
+    await loadLearnTexts('en');
     const { default: i18n } = await import('../i18n');
-    for (const [key, value] of Object.entries(translated)) {
-      expect(i18n.getResource(lang, 'learn', key), key).toBe(value);
+    for (const [key, value] of Object.entries(flat)) {
+      expect(i18n.getResource('en', 'learn', key), key).toBe(value);
     }
-  });
-});
-
-// Russian has four CLDR plural categories (one / few / many / other) where
-// English has two, and i18next does not fall back from a missing "_few" to
-// "_other" — it falls back to English. So every pluralised English key must
-// carry all four Russian forms, and everything else must match one to one.
-describe('ru locale', () => {
-  const enFlat = flatten(en as Tree);
-  const ruFlat = flatten(ru as Tree);
-  const PLURAL = /_(one|few|many|other)$/;
-  const RU_FORMS = ['one', 'few', 'many', 'other'];
-
-  it('has every key that en has, and nothing else', () => {
-    const expected = new Set<string>();
-    for (const key of Object.keys(enFlat)) {
-      if (PLURAL.test(key)) for (const f of RU_FORMS) expected.add(key.replace(PLURAL, `_${f}`));
-      else expected.add(key);
-    }
-    expect(Object.keys(ruFlat).sort()).toEqual([...expected].sort());
-  });
-
-  it('keeps every interpolation placeholder', () => {
-    for (const [key, value] of Object.entries(ruFlat)) {
-      const enKey = PLURAL.test(key) ? key.replace(PLURAL, '_other') : key;
-      expect(placeholders(value), key).toEqual(placeholders(enFlat[enKey]!));
-    }
-  });
-
-  it('uses Russian plurals for lesson and trainer counts', async () => {
-    const i18n = createInstance();
-    await i18n.init({ lng: 'ru', fallbackLng: 'en', resources: {
-      en: { translation: en }, ru: { translation: ru },
-    } });
-    for (const [count, form] of [[1, 'one'], [2, 'few'], [5, 'many'], [11, 'many'],
-      [21, 'one'], [22, 'few'], [25, 'many'], [1.5, 'other']] as const) {
-      for (const key of ['learn.tasks', 'learn.starsGained', 'learn.play.wonMate',
-        'openings.trainer.branchCount', 'openings.trainer.practiseBranches']) {
-        expect(i18n.t(key, { count }), `${key}: ${count}`).toBe(
-          ruFlat[`${key}_${form}`]!.replace('{{count}}', String(count)),
-        );
-      }
-    }
-  });
-});
-
-// Bulgarian and Spanish are partial (missing keys fall back to English), but
-// the Home card is on everyone's first screen every day: its texts are in all
-// five locales.
-describe.each([['de', de], ['ru', ru], ['bg', bg], ['es', es]] as const)('%s puzzle-of-the-day texts', (_lang, texts) => {
-  it('has the Home card and its Puzzles-tab texts', () => {
-    const flat = flatten(texts as Tree);
-    for (const key of ['home.todayPuzzle', 'home.dailyOpen', 'home.dailySolved', 'home.dailyDone', 'home.dailyStart',
-      'home.dailyStreak_one', 'home.dailyStreak_other', 'train.puzzles.allDone',
-      'train.puzzles.daily.title', 'train.puzzles.daily.more', 'train.puzzles.daily.already']) {
-      expect(flat[key], key).toBeTruthy();
-    }
-  });
-});
-
-describe('goalText', () => {
-  const t = ((key: string, opts?: Record<string, unknown>) => {
-    const v = flatten(de as Tree)[key];
-    if (v === undefined) return opts?.defaultValue as string;
-    return v.replace(/{{(\w+)}}/g, (_, n: string) => String(opts?.[n] ?? ''));
-  }) as never;
-
-  it('renders a stored goal in the user language from its kind and metadata', () => {
-    const goal = {
-      kind: 'opening_play',
-      title: 'Play 3 games in Sicilian Defense',
-      description: '…',
-      target: 3,
-      metadata: { eco: 'B20', opening_name: 'Sicilian Defense', color: 'black' },
-    };
-    expect(goalText(t, goal).title).toBe('Spiele 3 Partien mit Sicilian Defense');
-    expect(goalText(t, goal).description).toContain('als Schwarz');
-  });
-
-  it('falls back to the stored text for an unknown kind', () => {
-    const goal = { kind: 'something_new', title: 'Stored title', description: 'Stored description', target: 1, metadata: null };
-    expect(goalText(t, goal)).toEqual({ title: 'Stored title', description: 'Stored description' });
   });
 });

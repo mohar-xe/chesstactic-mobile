@@ -1,40 +1,33 @@
 {
   "name": "patzer",
-  "version": "7.19.0",
+  "version": "8.0.0",
   "private": true,
-  "description": "Patzer — your private Chess.com. Self-hosted, AI-coached, family-friendly. Stockfish + your own LLM in one Docker container.",
-  "license": "MIT",
+  "description": "Patzer — a local-first, human-like chess trainer. Play a bot that plays like a person, review your own games and learn from your own mistakes. On-device, offline, AGPL-3.0.",
+  "license": "AGPL-3.0-only",
   "homepage": "https://github.com/SikamikanikoBG/patzer",
   "repository": {
     "type": "git",
     "url": "https://github.com/SikamikanikoBG/patzer.git"
   },
   "workspaces": [
-    "server",
     "web"
   ],
   "scripts": {
-    "dev": "concurrently -n server,web -c blue,magenta \"npm:dev -w server\" \"npm:dev -w web\"",
-    "build": "npm run build -w server && npm run build -w web",
-    "start": "npm run start -w server",
-    "typecheck": "tsc -b server web --noEmit && tsc -p server/test/tsconfig.json",
-    "setup": "node scripts/setup.js",
+    "dev": "npm run dev -w web",
+    "build": "npm run build -w web",
+    "preview": "npm run preview -w web",
+    "typecheck": "tsc -b web --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "tsx server/test/e2e/pvp-negotiation.ts",
-    "test:resume": "tsx server/test/e2e/resume.ts",
-    "test:ui": "tsx server/test/e2e/pvp-ui.ts",
-    "test:resume-ui": "tsx server/test/e2e/resume-ui.ts",
-    "test:oidc": "tsx server/test/e2e/oidc-sso.ts",
-    "verify:lessons": "node scripts/verify-lessons.mjs",
-    "build:tactics": "node scripts/build-tactics-set.mjs"
+    "cap:sync": "cap sync android",
+    "cap:open": "cap open android",
+    "cap:android:apk": "cd android && ./gradlew assembleRelease",
+    "build:android": "npm run build && npm run cap:sync && npm run cap:android:apk"
   },
   "devDependencies": {
-    "@testing-library/react": "^16.3.3",
-    "@types/oidc-provider": "^9.12.1",
-    "concurrently": "^9.0.1",
+    "@capacitor/cli": "^6.2.0",
+    "@testing-library/react": "^14.3.1",
     "happy-dom": "^20.14.5",
-    "oidc-provider": "^9.12.2",
     "typescript": "^5.6.3",
     "vitest": "^3.2.7"
   },

@@ -1,10 +1,10 @@
 import { defineConfig } from 'vitest/config';
 
-// Root-level runner for both workspaces. Server tests live in server/test so
-// they never land in server/dist; web tests can sit next to their components.
+// Single-workspace runner. The app lives in web/src and its unit tests sit
+// next to the modules they cover.
 export default defineConfig({
   test: {
-    include: ['server/test/**/*.test.ts', 'web/src/**/*.test.{ts,tsx}'],
+    include: ['web/src/**/*.test.{ts,tsx}'],
     // Node by default; the few component tests opt into jsdom with a
     // `// @vitest-environment happy-dom` pragma at the top of the file.
     environment: 'node',

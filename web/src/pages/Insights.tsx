@@ -1,704 +1,142 @@
-// Insights v2 — the "Beyond Chess.com" analytics page. Activity heatmap,
-// rating trajectory, opening repertoire, mistake taxonomy, time-class breakdown.
-// All charts are inline SVG (no extra deps); calls /api/insights/v2.
+import { useEffect, useState } from 'react';
+import { playerMemory, weakestPhase, type PlayerMemory } from '../analysis/memory';
+import { allRatings, formatRating } from '../game/rating';
+import { listGames } from '../storage/db';
+import type { RatingRecord } from '../chess/types';
 
-import { useEffect, useMemo, useRef } from 'react';
-import { Link, useLocation } from 'react-router-dom';
-import { useTranslation } from 'react-i18next';
-import { useQuery } from '@tanstack/react-query';
-import * as Icons from 'lucide-react';
-import { Activity, BarChart3, Target, TrendingUp, Flame, AlertTriangle, BookOpen, Award, Lock, Sparkles, ChevronRight } from 'lucide-react';
-import { api } from '../api';
-
-type Achievement = {
-  id: string;
-  title: string;
-  description: string;
-  icon: string;
-  category: 'milestone' | 'mastery' | 'tactics' | 'streaks' | 'learning';
-  unlocked: boolean;
-  unlocked_at: string | null;
-  progress: number;
-  target: number;
+const MISTAKE_LABELS: Record<string, string> = {
+  allowed_mate: 'Allowed a mate',
+  hung_piece: 'Hung a piece',
+  missed_mate: 'Missed a mate',
+  missed_win: 'Missed a win',
+  missed_tactic: 'Missed a tactic',
 };
 
-type Color = 'white' | 'black';
-interface OpeningRow { eco: string; name: string; color: Color; played: number; wins: number; draws: number; losses: number; avg_accuracy: number | null }
-interface InsightsV2 {
-  games_analyzed: number;
-  activity_heatmap: { day: string; games: number; wins: number }[];
-  rating_trajectory: Record<string, { t: string; r: number }[]>;
-  time_class_stats: Record<string, { games: number; wins: number; draws: number; losses: number; avg_accuracy: number | null }>;
-  opening_repertoire: OpeningRow[];
-  mistake_taxonomy: {
-    hung_pieces: number; back_rank: number; missed_mate: number;
-    opening_pitfalls: number; endgame_drift: number;
-    one_move_blunders: number; promising_to_losing: number;
-  };
-  phase_accuracy: { opening: number; middlegame: number; endgame: number };
-  accuracy_trend: { t: string; acc: number; result: string | null }[];
-  move_quality?: {
-    counts: Record<string, number>;
-    brilliant: { game_id: number; ply: number; san: string; end_time: string | null; opponent: string }[];
-  };
-}
+const PHASE_LABELS: Record<string, string> = {
+  opening: 'Opening',
+  middlegame: 'Middlegame',
+  endgame: 'Endgame',
+};
 
 export default function Insights() {
-  const { t } = useTranslation();
-  const { data, isLoading } = useQuery({
-    queryKey: ['insights-v2'],
-    queryFn: () => api.get<InsightsV2>('/api/insights/v2'),
-  });
-  const { data: achievementsData } = useQuery({
-    queryKey: ['achievements'],
-    queryFn: () => api.get<{ achievements: Achievement[] }>('/api/achievements'),
-  });
+  const [memory, setMemory] = useState<PlayerMemory | null>(null);
+  const [ratings, setRatings] = useState<RatingRecord[]>([]);
+  const [games, setGames] = useState(0);
 
-  // Anchor-scroll into #achievements when the route hash is present.
-  const achievementsRef = useRef<HTMLElement | null>(null) as React.MutableRefObject<HTMLElement | null>;
-  const location = useLocation();
   useEffect(() => {
-    if (location.hash !== '#achievements') return;
-    // Wait a tick so the section has rendered.
-    const id = window.setTimeout(() => {
-      achievementsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }, 50);
-    return () => window.clearTimeout(id);
-  }, [location.hash, achievementsData]);
+    let alive = true;
+    void (async () => {
+      const [mem, rat, list] = await Promise.all([playerMemory(), allRatings(), listGames(500)]);
+      if (!alive) return;
+      setMemory(mem);
+      setRatings(rat);
+      setGames(list.length);
+    })();
+    return () => { alive = false; };
+  }, []);
 
-  if (isLoading) return <Skeleton />;
-  if (!data || data.games_analyzed === 0) {
-    return (
-      <div className="card flex flex-col items-center gap-2 p-10 text-center">
-        <BarChart3 className="h-8 w-8 text-chesscom-400" />
-        <div className="text-base font-semibold">{t('insights.empty', { defaultValue: 'No insights yet' })}</div>
-        <div className="text-sm text-chesscom-500">{t('insights.emptyDesc', { defaultValue: 'Analyze a few games and your weak spots will show up here.' })}</div>
-        <Link to="/review" className="btn-primary mt-2 text-sm">{t('review.title')}</Link>
-      </div>
-    );
-  }
+  const weak = memory ? weakestPhase(memory) : null;
 
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="page-h1">{t('insights.title', { defaultValue: 'Insights' })}</h1>
-        <p className="page-sub">{t('insights.subv2', { defaultValue: 'Patterns across your last {{n}} analyzed games.', n: data.games_analyzed })}</p>
+        <h1 className="text-xl font-semibold">Insights</h1>
+        <p className="mt-1 text-sm text-slate-400">
+          What keeps going wrong, and where. Everything here is computed from the games on this
+          device.
+        </p>
       </header>
 
-      {/* Achievements */}
-      <AchievementsSection sectionRef={achievementsRef} achievements={achievementsData?.achievements ?? null} />
+      <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <Stat label="Games stored" value={String(games)} />
+        <Stat label="Games reviewed" value={String(memory?.gamesReviewed ?? 0)} />
+        <Stat label="Great moves found" value={String(memory?.greatFinds ?? 0)} />
+        <Stat
+          label="Blitz rating"
+          value={formatRating(ratings.find((r) => r.timeClass === 'blitz') ?? ratings[0]!)}
+        />
+      </section>
 
-      {/* Phase accuracy + Time-class breakdown side-by-side */}
-      <div className="grid gap-4 md:grid-cols-2">
-        <PhaseAccuracyCard data={data.phase_accuracy} />
-        <TimeClassCard data={data.time_class_stats} />
-      </div>
+      {!memory || memory.gamesReviewed === 0 ? (
+        <p className="rounded-xl border border-white/10 bg-white/[0.02] p-4 text-sm text-slate-400">
+          Analyse a few games and your patterns will show up here.
+        </p>
+      ) : (
+        <>
+          {weak && (
+            <section className="rounded-xl border border-[#ffc934]/40 bg-[#ffc934]/5 p-4">
+              <h2 className="text-sm font-semibold">Your weakest phase</h2>
+              <p className="mt-1 text-sm text-slate-300">
+                {PHASE_LABELS[weak.weak]} accuracy is {weak.weakAcc}% against {weak.bestAcc}% in the{' '}
+                {PHASE_LABELS[weak.best].toLowerCase()}. Focus your drills there.
+              </p>
+            </section>
+          )}
 
-      {data.move_quality && <MoveQualityCard data={data.move_quality} />}
+          <section className="space-y-2">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">
+              Accuracy by phase
+            </h2>
+            <div className="space-y-2">
+              {(['opening', 'middlegame', 'endgame'] as const).map((phase) => {
+                const value = memory.phaseAccuracy[phase];
+                if (value === undefined) return null;
+                return (
+                  <div key={phase} className="flex items-center gap-3">
+                    <span className="w-24 shrink-0 text-sm text-slate-300">{PHASE_LABELS[phase]}</span>
+                    <div className="h-2 flex-1 overflow-hidden rounded bg-white/10">
+                      <div
+                        className="h-full rounded bg-[#ffc934]"
+                        style={{ width: `${Math.max(2, Math.min(100, value))}%` }}
+                      />
+                    </div>
+                    <span className="w-12 shrink-0 text-right text-sm tabular-nums">{value}%</span>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
 
-      {/* Activity heatmap */}
-      <ActivityHeatmap data={data.activity_heatmap} />
-
-      {/* Rating trajectory + accuracy trend */}
-      <div className="grid gap-4 md:grid-cols-2">
-        <RatingTrajectoryCard data={data.rating_trajectory} />
-        <AccuracyTrendCard data={data.accuracy_trend} />
-      </div>
-
-      {/* Mistake taxonomy + Opening repertoire */}
-      <div className="grid gap-4 lg:grid-cols-[1.1fr_1fr]">
-        <MistakeTaxonomyCard data={data.mistake_taxonomy} />
-        <OpeningRepertoireCard data={data.opening_repertoire} />
-      </div>
-    </div>
-  );
-}
-
-/* ───── Move quality ───────────────────────────────────────────────────── */
-// Your moves by classification (chess.com's colors), and your brilliant
-// moves to jump back to. Tailwind needs the class names spelled out.
-const QUALITY_ROWS: { key: string; symbol: string; bar: string; text: string }[] = [
-  { key: 'brilliant', symbol: '!!', bar: 'bg-move-brilliant', text: 'text-move-brilliant' },
-  { key: 'great', symbol: '!', bar: 'bg-move-great', text: 'text-move-great' },
-  { key: 'best', symbol: '★', bar: 'bg-move-best', text: 'text-move-best' },
-  { key: 'excellent', symbol: '✓', bar: 'bg-move-excellent', text: 'text-move-excellent' },
-  { key: 'good', symbol: '·', bar: 'bg-move-good', text: 'text-move-good' },
-  { key: 'book', symbol: '📖', bar: 'bg-move-book', text: 'text-move-book' },
-  { key: 'inaccuracy', symbol: '?!', bar: 'bg-move-inaccuracy', text: 'text-move-inaccuracy' },
-  { key: 'mistake', symbol: '?', bar: 'bg-move-mistake', text: 'text-move-mistake' },
-  { key: 'miss', symbol: '✗', bar: 'bg-move-miss', text: 'text-move-miss' },
-  { key: 'blunder', symbol: '??', bar: 'bg-move-blunder', text: 'text-move-blunder' },
-];
-
-/** "12." for White's move, "12…" for Black's. */
-function moveNumber(ply: number): string {
-  const n = Math.ceil(ply / 2);
-  return ply % 2 === 1 ? `${n}.` : `${n}…`;
-}
-
-function MoveQualityCard({ data }: { data: NonNullable<InsightsV2['move_quality']> }) {
-  const { t, i18n } = useTranslation();
-  const total = QUALITY_ROWS.reduce((sum, r) => sum + (data.counts[r.key] ?? 0), 0);
-  const max = Math.max(1, ...QUALITY_ROWS.map((r) => data.counts[r.key] ?? 0));
-  const date = (s: string | null) => (s ? new Date(`${s.slice(0, 10)}T12:00:00`).toLocaleDateString(i18n.language) : '');
-  return (
-    <section className="card p-4">
-      <div className="mb-3 flex items-center gap-2">
-        <Sparkles className="h-4 w-4 text-move-brilliant" />
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-chesscom-500">{t('insights.moveQuality')}</h2>
-        <span className="ml-auto text-[11px] text-chesscom-400">{t('insights.moveQualityTotal', { count: total })}</span>
-      </div>
-      <div className="grid gap-5 md:grid-cols-[1.2fr_1fr]">
-        <div className="space-y-1.5">
-          {QUALITY_ROWS.map((r) => {
-            const n = data.counts[r.key] ?? 0;
-            return (
-              <div key={r.key} className="flex items-center gap-2 text-xs">
-                <span className={`w-6 shrink-0 text-center font-mono font-bold ${r.text}`}>{r.symbol}</span>
-                <span className="w-28 shrink-0 truncate text-chesscom-700 dark:text-chesscom-200">{t(`classification.${r.key}`)}</span>
-                <div className="h-2 flex-1 overflow-hidden rounded-full bg-chesscom-100 dark:bg-chesscom-700/60">
-                  <div className={`h-full rounded-full ${r.bar}`} style={{ width: `${(n / max) * 100}%` }} />
-                </div>
-                <span className="w-10 shrink-0 text-right font-mono tabular-nums text-chesscom-900 dark:text-chesscom-100">{n}</span>
-                <span className="w-10 shrink-0 text-right font-mono tabular-nums text-chesscom-400">{total ? `${Math.round((n / total) * 100)}%` : '—'}</span>
-              </div>
-            );
-          })}
-        </div>
-        <div>
-          <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-chesscom-500">{t('insights.brilliantMoves')}</div>
-          {data.brilliant.length === 0 ? (
-            <div className="rounded-md bg-chesscom-50/70 p-3 text-xs text-chesscom-500 dark:bg-chesscom-900/40">{t('insights.noBrilliant')}</div>
-          ) : (
-            <ul className="space-y-1">
-              {data.brilliant.map((b) => (
-                <li key={`${b.game_id}-${b.ply}`}>
-                  <Link
-                    to={`/review/${b.game_id}?ply=${b.ply}`}
-                    className="group flex items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-chesscom-100 dark:hover:bg-chesscom-700/40"
-                  >
-                    <span className="font-mono font-semibold text-move-brilliant">{moveNumber(b.ply)}{b.san}!!</span>
-                    <span className="truncate text-chesscom-600 dark:text-chesscom-300">{t('insights.vsOpponent', { name: b.opponent })}</span>
-                    <span className="ml-auto shrink-0 text-chesscom-400">{date(b.end_time)}</span>
-                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-chesscom-400 transition-transform group-hover:translate-x-0.5" />
-                  </Link>
+          <section className="space-y-2">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">
+              Recurring mistakes
+            </h2>
+            <ul className="divide-y divide-white/10 rounded-xl border border-white/10">
+              {Object.entries(memory.mistakeGames).map(([kind, count]) => (
+                <li key={kind} className="flex items-center justify-between px-4 py-2.5 text-sm">
+                  <span className="text-slate-300">{MISTAKE_LABELS[kind] ?? kind}</span>
+                  <span className="tabular-nums text-slate-400">
+                    {count} {count === 1 ? 'game' : 'games'}
+                  </span>
                 </li>
               ))}
             </ul>
-          )}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-/* ───── Phase accuracy ─────────────────────────────────────────────────── */
-function PhaseAccuracyCard({ data }: { data: InsightsV2['phase_accuracy'] }) {
-  const { t } = useTranslation();
-  return (
-    <section className="card p-4">
-      <div className="mb-3 flex items-center gap-2">
-        <Target className="h-4 w-4 text-gold-500" />
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-chesscom-500">{t('insights.phaseAccuracy', { defaultValue: 'Phase accuracy' })}</h2>
-      </div>
-      <div className="grid grid-cols-3 gap-2">
-        <PhaseStat label={t('review.opening', { defaultValue: 'Opening' })} value={data.opening} />
-        <PhaseStat label={t('review.middlegame', { defaultValue: 'Middlegame' })} value={data.middlegame} />
-        <PhaseStat label={t('review.endgame', { defaultValue: 'Endgame' })} value={data.endgame} />
-      </div>
-    </section>
-  );
-}
-
-function PhaseStat({ label, value }: { label: string; value: number }) {
-  const tone = value >= 80 ? 'text-board-dark' : value >= 60 ? 'text-gold-600' : 'text-mistake';
-  return (
-    <div className="rounded-md bg-chesscom-50/70 px-3 py-3 text-center dark:bg-chesscom-900/40">
-      <div className="text-[11px] uppercase tracking-wide text-chesscom-500">{label}</div>
-      <div className={`mt-0.5 font-mono text-2xl font-bold tabular-nums ${tone}`}>{value.toFixed(1)}<span className="text-xs opacity-70">%</span></div>
-    </div>
-  );
-}
-
-/* ───── Time-class stats ───────────────────────────────────────────────── */
-function TimeClassCard({ data }: { data: InsightsV2['time_class_stats'] }) {
-  const { t } = useTranslation();
-  const order: { key: string; label: string }[] = [
-    { key: 'bullet', label: t('players.tc.bullet') },
-    { key: 'blitz', label: t('players.tc.blitz') },
-    { key: 'rapid', label: t('players.tc.rapid') },
-    { key: 'daily', label: t('players.tc.daily') },
-  ];
-  return (
-    <section className="card p-4">
-      <div className="mb-3 flex items-center gap-2">
-        <Activity className="h-4 w-4 text-board-dark" />
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-chesscom-500">{t('insights.timeClass', { defaultValue: 'By time class' })}</h2>
-      </div>
-      <div className="space-y-2">
-        {order.map(({ key, label }) => {
-          const s = data[key];
-          if (!s || s.games === 0) return (
-            <div key={key} className="flex items-center justify-between text-xs text-chesscom-400">
-              <span>{label}</span><span>—</span>
-            </div>
-          );
-          const wp = (s.wins / s.games) * 100;
-          const dp = (s.draws / s.games) * 100;
-          return (
-            <div key={key}>
-              <div className="mb-1 flex items-baseline justify-between text-xs">
-                <span className="font-medium text-chesscom-700 dark:text-chesscom-200">{label}</span>
-                <span className="font-mono tabular-nums text-chesscom-500">
-                  {t('insights.tcLine', { games: s.games, wins: s.wins, draws: s.draws, losses: s.losses })}
-                  {s.avg_accuracy != null && <> · {s.avg_accuracy.toFixed(1)}%</>}
-                </span>
-              </div>
-              <div className="flex h-2 w-full overflow-hidden rounded-full bg-chesscom-100 dark:bg-chesscom-900">
-                <div className="h-full bg-board-dark" style={{ width: `${wp}%` }} />
-                <div className="h-full bg-chesscom-300 dark:bg-chesscom-600" style={{ width: `${dp}%` }} />
-                <div className="h-full bg-mistake/80" style={{ width: `${100 - wp - dp}%` }} />
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-/* ───── Activity heatmap ───────────────────────────────────────────────── */
-function ActivityHeatmap({ data }: { data: InsightsV2['activity_heatmap'] }) {
-  const { t } = useTranslation();
-  // Build a 53-week × 7-day grid ending today.
-  const grid = useMemo(() => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const end = new Date(today);
-    // Fill back exactly 52 weeks + today's column.
-    const totalDays = 53 * 7;
-    const start = new Date(today);
-    start.setDate(start.getDate() - (totalDays - 1));
-    const dayMap = new Map<string, { games: number; wins: number }>();
-    for (const r of data) dayMap.set(r.day, { games: r.games, wins: r.wins });
-
-    const cells: { date: string; day: number; games: number; wins: number }[] = [];
-    let max = 0;
-    for (let i = 0; i < totalDays; i++) {
-      const d = new Date(start);
-      d.setDate(start.getDate() + i);
-      const iso = d.toISOString().slice(0, 10);
-      const v = dayMap.get(iso) ?? { games: 0, wins: 0 };
-      max = Math.max(max, v.games);
-      cells.push({ date: iso, day: d.getDay(), games: v.games, wins: v.wins });
-    }
-    return { cells, max, end };
-  }, [data]);
-
-  function tone(games: number, max: number): string {
-    if (games === 0) return 'fill-chesscom-100 dark:fill-chesscom-900';
-    const ratio = games / Math.max(1, max);
-    if (ratio < 0.25) return 'fill-board-dark/30';
-    if (ratio < 0.5) return 'fill-board-dark/55';
-    if (ratio < 0.75) return 'fill-board-dark/75';
-    return 'fill-board-dark';
-  }
-
-  const totalGames = data.reduce((a, b) => a + b.games, 0);
-  const totalWins = data.reduce((a, b) => a + b.wins, 0);
-
-  // 53 cols × 7 rows. Cell 12px, gap 2px. Width ≈ 53*14 = 742, fits 760 board col.
-  const cellSize = 11;
-  const cellGap = 2;
-  const cols = 53;
-  const rows = 7;
-  const W = cols * (cellSize + cellGap);
-  const H = rows * (cellSize + cellGap);
-
-  return (
-    <section className="card p-4">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <Flame className="h-4 w-4 text-mistake" />
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-chesscom-500">{t('insights.activity', { defaultValue: 'Activity' })}</h2>
-        </div>
-        <div className="text-xs text-chesscom-500">
-          {t('insights.activityFooter', { defaultValue: '{{games}} games · {{wins}} wins in last 12 months', games: totalGames, wins: totalWins })}
-        </div>
-      </div>
-      <div className="overflow-x-auto">
-        <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="block">
-          {grid.cells.map((c, i) => {
-            const col = Math.floor(i / 7);
-            const row = i % 7;
-            const x = col * (cellSize + cellGap);
-            const y = row * (cellSize + cellGap);
-            return (
-              <rect
-                key={c.date}
-                x={x}
-                y={y}
-                width={cellSize}
-                height={cellSize}
-                rx={2}
-                className={tone(c.games, grid.max)}
-              >
-                <title>{t('insights.dayGames', { date: c.date, count: c.games }) + (c.games > 0 ? t('insights.dayWins', { wins: c.wins }) : '')}</title>
-              </rect>
-            );
-          })}
-        </svg>
-      </div>
-      <div className="mt-2 flex items-center justify-end gap-1.5 text-[11px] text-chesscom-400">
-        <span>{t('insights.less', { defaultValue: 'Less' })}</span>
-        <span className="h-2.5 w-2.5 rounded-sm bg-chesscom-100 dark:bg-chesscom-900" />
-        <span className="h-2.5 w-2.5 rounded-sm bg-board-dark/30" />
-        <span className="h-2.5 w-2.5 rounded-sm bg-board-dark/55" />
-        <span className="h-2.5 w-2.5 rounded-sm bg-board-dark/75" />
-        <span className="h-2.5 w-2.5 rounded-sm bg-board-dark" />
-        <span>{t('insights.more', { defaultValue: 'More' })}</span>
-      </div>
-    </section>
-  );
-}
-
-/* ───── Rating trajectory ─────────────────────────────────────────────── */
-function RatingTrajectoryCard({ data }: { data: InsightsV2['rating_trajectory'] }) {
-  const { t } = useTranslation();
-  const series = (['rapid', 'blitz', 'bullet', 'daily'] as const)
-    .map((k) => ({ key: k, points: data[k] ?? [] }))
-    .filter((s) => s.points.length > 0);
-
-  if (series.length === 0) {
-    return (
-      <section className="card p-4">
-        <div className="mb-3 flex items-center gap-2">
-          <TrendingUp className="h-4 w-4 text-board-dark" />
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-chesscom-500">{t('insights.ratingTrend', { defaultValue: 'Rating trajectory' })}</h2>
-        </div>
-        <div className="py-6 text-center text-xs text-chesscom-400">{t('insights.noRatedGames', { defaultValue: 'No rated PvP games yet.' })}</div>
-      </section>
-    );
-  }
-
-  // Combined Y axis across all series
-  const all = series.flatMap((s) => s.points.map((p) => p.r));
-  let min = Math.min(...all);
-  let max = Math.max(...all);
-  if (min === max) { min -= 50; max += 50; }
-  const pad = Math.max(20, Math.round((max - min) * 0.08));
-  min -= pad; max += pad;
-
-  const W = 480, H = 140, padX = 28, padY = 14;
-  const colors: Record<string, string> = {
-    rapid: '#769656',
-    blitz: '#e0a02b',
-    bullet: '#c63b3a',
-    daily: '#6c7a89',
-  };
-  const xs = series.flatMap((s) => s.points.map((p) => new Date(p.t).getTime()));
-  const tMin = Math.min(...xs), tMax = Math.max(...xs);
-  const xScale = (t: number) => padX + ((t - tMin) / Math.max(1, tMax - tMin)) * (W - 2 * padX);
-  const yScale = (r: number) => H - padY - ((r - min) / (max - min)) * (H - 2 * padY);
-
-  return (
-    <section className="card p-4">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <TrendingUp className="h-4 w-4 text-board-dark" />
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-chesscom-500">{t('insights.ratingTrend', { defaultValue: 'Rating trajectory' })}</h2>
-        </div>
-        <div className="flex items-center gap-2 text-[11px] text-chesscom-500">
-          {series.map((s) => (
-            <span key={s.key} className="inline-flex items-center gap-1">
-              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: colors[s.key] }} />
-              <span>{t(`players.tc.${s.key}`)}</span>
-            </span>
-          ))}
-        </div>
-      </div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
-        {/* y axis labels */}
-        {[min, (min + max) / 2, max].map((v, i) => (
-          <g key={i}>
-            <line x1={padX} x2={W - padX} y1={yScale(v)} y2={yScale(v)} className="stroke-chesscom-200 dark:stroke-chesscom-700" strokeWidth={0.5} strokeDasharray="2 3" />
-            <text x={padX - 4} y={yScale(v) + 3} textAnchor="end" fontSize={9} className="fill-chesscom-400">{Math.round(v)}</text>
-          </g>
-        ))}
-        {series.map((s) => {
-          const path = s.points.map((p, i) => `${i === 0 ? 'M' : 'L'}${xScale(new Date(p.t).getTime()).toFixed(1)},${yScale(p.r).toFixed(1)}`).join(' ');
-          return (
-            <g key={s.key}>
-              <path d={path} fill="none" stroke={colors[s.key]} strokeWidth={1.5} />
-              {s.points.map((p, i) => (
-                <circle key={i} cx={xScale(new Date(p.t).getTime())} cy={yScale(p.r)} r={1.6} fill={colors[s.key]}>
-                  <title>{`${t(`players.tc.${s.key}`)} ${p.r} · ${new Date(p.t).toLocaleDateString()}`}</title>
-                </circle>
-              ))}
-            </g>
-          );
-        })}
-      </svg>
-    </section>
-  );
-}
-
-/* ───── Accuracy trend ─────────────────────────────────────────────────── */
-function AccuracyTrendCard({ data }: { data: InsightsV2['accuracy_trend'] }) {
-  const { t } = useTranslation();
-  if (data.length === 0) {
-    return (
-      <section className="card p-4">
-        <div className="mb-3 flex items-center gap-2">
-          <Target className="h-4 w-4 text-gold-500" />
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-chesscom-500">{t('insights.accuracyTrend', { defaultValue: 'Accuracy trend' })}</h2>
-        </div>
-        <div className="py-6 text-center text-xs text-chesscom-400">—</div>
-      </section>
-    );
-  }
-  const W = 480, H = 140, padX = 28, padY = 14;
-  const xs = data.map((_, i) => i);
-  const xMin = 0, xMax = Math.max(1, xs[xs.length - 1] ?? 1);
-  const yMin = 0, yMax = 100;
-  const xScale = (i: number) => padX + ((i - xMin) / Math.max(1, xMax - xMin)) * (W - 2 * padX);
-  const yScale = (v: number) => H - padY - ((v - yMin) / (yMax - yMin)) * (H - 2 * padY);
-  const path = data.map((p, i) => `${i === 0 ? 'M' : 'L'}${xScale(i).toFixed(1)},${yScale(p.acc).toFixed(1)}`).join(' ');
-  const avg = data.reduce((a, b) => a + b.acc, 0) / data.length;
-  return (
-    <section className="card p-4">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <Target className="h-4 w-4 text-gold-500" />
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-chesscom-500">{t('insights.accuracyTrend', { defaultValue: 'Accuracy trend' })}</h2>
-        </div>
-        <span className="font-mono text-xs tabular-nums text-chesscom-500">{t('insights.avg', { defaultValue: 'avg' })} {avg.toFixed(1)}%</span>
-      </div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
-        {[0, 50, 100].map((v) => (
-          <line key={v} x1={padX} x2={W - padX} y1={yScale(v)} y2={yScale(v)} className="stroke-chesscom-200 dark:stroke-chesscom-700" strokeWidth={0.5} strokeDasharray="2 3" />
-        ))}
-        {/* avg line */}
-        <line x1={padX} x2={W - padX} y1={yScale(avg)} y2={yScale(avg)} stroke="#e0a02b" strokeWidth={0.7} strokeDasharray="3 3" opacity={0.7} />
-        <path d={path} fill="none" stroke="#769656" strokeWidth={1.5} />
-        {data.map((p, i) => (
-          <circle key={i} cx={xScale(i)} cy={yScale(p.acc)} r={1.8} fill={p.result === 'win' ? '#769656' : p.result === 'loss' ? '#c63b3a' : '#6c7a89'}>
-            <title>{`${p.acc.toFixed(1)}% · ${p.result ? t(`insights.result.${p.result}`) : '—'} · ${new Date(p.t).toLocaleDateString()}`}</title>
-          </circle>
-        ))}
-        <text x={padX - 4} y={yScale(0) + 3} textAnchor="end" fontSize={9} className="fill-chesscom-400">0</text>
-        <text x={padX - 4} y={yScale(50) + 3} textAnchor="end" fontSize={9} className="fill-chesscom-400">50</text>
-        <text x={padX - 4} y={yScale(100) + 3} textAnchor="end" fontSize={9} className="fill-chesscom-400">100</text>
-      </svg>
-    </section>
-  );
-}
-
-/* ───── Mistake taxonomy ──────────────────────────────────────────────── */
-function MistakeTaxonomyCard({ data }: { data: InsightsV2['mistake_taxonomy'] }) {
-  const { t } = useTranslation();
-  const buckets: { key: keyof InsightsV2['mistake_taxonomy']; label: string; desc: string }[] = [
-    { key: 'hung_pieces', label: t('insights.tax.hung', { defaultValue: 'Hung pieces' }), desc: t('insights.tax.hungDesc', { defaultValue: '≥2 pawns of material lost' }) },
-    { key: 'one_move_blunders', label: t('insights.tax.oneMove', { defaultValue: 'One-move blunders' }), desc: t('insights.tax.oneMoveDesc', { defaultValue: 'Sudden cliff edges' }) },
-    { key: 'back_rank', label: t('insights.tax.backRank', { defaultValue: 'Back-rank weakness' }), desc: t('insights.tax.backRankDesc', { defaultValue: 'King exposed on home rank' }) },
-    { key: 'missed_mate', label: t('insights.tax.missedMate', { defaultValue: 'Missed wins / mates' }), desc: t('insights.tax.missedMateDesc', { defaultValue: 'You had it — and walked away' }) },
-    { key: 'opening_pitfalls', label: t('insights.tax.openingTrap', { defaultValue: 'Opening pitfalls' }), desc: t('insights.tax.openingTrapDesc', { defaultValue: 'Mistakes before move 15' }) },
-    { key: 'endgame_drift', label: t('insights.tax.endgameDrift', { defaultValue: 'Endgame drift' }), desc: t('insights.tax.endgameDriftDesc', { defaultValue: 'Errors in technical positions' }) },
-    { key: 'promising_to_losing', label: t('insights.tax.promisingLosing', { defaultValue: 'Squandered advantages' }), desc: t('insights.tax.promisingLosingDesc', { defaultValue: '+1.5 → flat in one move' }) },
-  ];
-  const max = Math.max(1, ...buckets.map((b) => data[b.key]));
-  return (
-    <section className="card p-4">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <AlertTriangle className="h-4 w-4 text-mistake" />
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-chesscom-500">{t('insights.taxonomy', { defaultValue: 'Mistake taxonomy' })}</h2>
-        </div>
-        <Link to="/train" className="text-xs font-medium text-board-dark hover:underline">{t('insights.trainCta', { defaultValue: 'Train these →' })}</Link>
-      </div>
-      <div className="space-y-1.5">
-        {buckets.sort((a, b) => data[b.key] - data[a.key]).map((b) => {
-          const v = data[b.key];
-          const pct = (v / max) * 100;
-          return (
-            <div key={b.key} className="grid grid-cols-[1fr_auto] items-center gap-2">
-              <div className="min-w-0">
-                <div className="flex items-baseline justify-between gap-2">
-                  <span className="truncate text-xs font-medium text-chesscom-700 dark:text-chesscom-200">{b.label}</span>
-                  <span className="font-mono text-xs tabular-nums text-chesscom-500">{v}</span>
-                </div>
-                <div className="mt-0.5 h-1.5 overflow-hidden rounded-full bg-chesscom-100 dark:bg-chesscom-900">
-                  <div className="h-full bg-mistake/70" style={{ width: `${pct}%` }} />
-                </div>
-                <div className="mt-0.5 truncate text-[11px] text-chesscom-400">{b.desc}</div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-/* ───── Opening repertoire ────────────────────────────────────────────── */
-function OpeningRepertoireCard({ data }: { data: OpeningRow[] }) {
-  const { t } = useTranslation();
-  if (data.length === 0) {
-    return (
-      <section className="card p-4">
-        <div className="mb-3 flex items-center gap-2">
-          <BookOpen className="h-4 w-4 text-gold-500" />
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-chesscom-500">{t('insights.openings', { defaultValue: 'Top openings' })}</h2>
-        </div>
-        <div className="py-6 text-center text-xs text-chesscom-400">—</div>
-      </section>
-    );
-  }
-  return (
-    <section className="card overflow-hidden">
-      <div className="flex items-center gap-2 border-b border-chesscom-200 px-4 py-3 dark:border-chesscom-700">
-        <BookOpen className="h-4 w-4 text-gold-500" />
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-chesscom-500">{t('insights.openings', { defaultValue: 'Top openings' })}</h2>
-      </div>
-      <div className="overflow-x-auto">
-      <table className="w-full min-w-[28rem] text-xs">
-        <thead className="bg-chesscom-50/50 text-[11px] uppercase tracking-wide text-chesscom-500 dark:bg-chesscom-900/40">
-          <tr>
-            <th className="px-3 py-1.5 text-left">{t('insights.opening', { defaultValue: 'Opening' })}</th>
-            <th className="whitespace-nowrap px-2 py-1.5 text-center" title={t('insights.sideTitle')}><span className="sr-only">{t('insights.side')}</span>♔/♚</th>
-            <th className="whitespace-nowrap px-2 py-1.5 text-right">{t('insights.played', { defaultValue: 'Games' })}</th>
-            <th className="whitespace-nowrap px-2 py-1.5 text-right">{t('insights.score', { defaultValue: 'Score' })}</th>
-            <th className="whitespace-nowrap px-2 py-1.5 text-right">{t('insights.acc', { defaultValue: 'Acc' })}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {data.map((o) => {
-            const total = Math.max(1, o.played);
-            const score = (o.wins + 0.5 * o.draws) / total;
-            const tone = score >= 0.55 ? 'text-board-dark' : score <= 0.4 ? 'text-mistake' : 'text-chesscom-700 dark:text-chesscom-200';
-            return (
-              <tr key={`${o.color}|${o.eco}`} className="border-t border-chesscom-100 dark:border-chesscom-700/60">
-                <td className="px-3 py-1.5">
-                  <div className="flex items-center gap-1.5 truncate">
-                    <span className="rounded bg-chesscom-100 px-1 py-px text-[11px] font-mono text-chesscom-600 dark:bg-chesscom-900/60 dark:text-chesscom-300">{o.eco}</span>
-                    <span className="truncate font-medium text-chesscom-800 dark:text-chesscom-100">{o.name}</span>
-                  </div>
-                </td>
-                <td className="px-2 py-1.5 text-center">{o.color === 'white' ? '♔' : '♚'}</td>
-                <td className="px-2 py-1.5 text-right font-mono tabular-nums">{o.played}</td>
-                <td className="px-2 py-1.5 text-right">
-                  <span className={`font-mono tabular-nums ${tone}`}>{(score * 100).toFixed(0)}%</span>
-                  <span className="ml-1 text-[11px] text-chesscom-400">{o.wins}/{o.draws}/{o.losses}</span>
-                </td>
-                <td className="whitespace-nowrap px-2 py-1.5 text-right font-mono tabular-nums">{o.avg_accuracy != null ? `${o.avg_accuracy.toFixed(1)}` : '—'}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      </div>
-    </section>
-  );
-}
-
-/* ───── Achievements ───────────────────────────────────────────────────── */
-const AchievementsSection = ({ achievements, sectionRef }: { achievements: Achievement[] | null; sectionRef: React.MutableRefObject<HTMLElement | null> }) => {
-  const { t } = useTranslation();
-  const list = achievements ?? [];
-  const order: { key: Achievement['category']; label: string }[] = [
-    { key: 'milestone', label: t('insights.ach.milestone', { defaultValue: 'Milestones' }) },
-    { key: 'mastery', label: t('insights.ach.mastery', { defaultValue: 'Mastery' }) },
-    { key: 'tactics', label: t('insights.ach.tactics', { defaultValue: 'Tactics' }) },
-    { key: 'streaks', label: t('insights.ach.streaks', { defaultValue: 'Streaks' }) },
-    { key: 'learning', label: t('insights.ach.learning') },
-  ];
-  const grouped = order.map((g) => ({ ...g, items: list.filter((a) => a.category === g.key) })).filter((g) => g.items.length > 0);
-  const unlocked = list.filter((a) => a.unlocked).length;
-
-  return (
-    <section ref={(node) => { sectionRef.current = node; }} id="achievements" className="card p-4">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <Award className="h-4 w-4 text-gold-500" />
-          <h2 className="text-xs font-semibold uppercase tracking-wider text-chesscom-500">{t('insights.achievements', { defaultValue: 'Achievements' })}</h2>
-        </div>
-        <span className="font-mono text-[11px] tabular-nums text-chesscom-500">
-          {unlocked}/{list.length || '—'} {t('insights.achUnlocked', { defaultValue: 'unlocked' })}
-        </span>
-      </div>
-      {list.length === 0 ? (
-        <div className="py-4 text-center text-xs text-chesscom-400">
-          {t('insights.achEmpty', { defaultValue: 'Play and analyze games to start earning badges.' })}
-        </div>
-      ) : (
-        <div className="space-y-4">
-          {grouped.map((g) => (
-            <div key={g.key}>
-              <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-chesscom-500">{g.label}</div>
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
-                {g.items.map((a) => <AchievementBadge key={a.id} a={a} />)}
-              </div>
-            </div>
-          ))}
-        </div>
+          </section>
+        </>
       )}
-    </section>
-  );
-};
 
-function AchievementBadge({ a }: { a: Achievement }) {
-  const { t } = useTranslation();
-  const Icon = resolveLucide(a.icon);
-  const pct = Math.min(100, Math.round((a.progress / Math.max(1, a.target)) * 100));
-  return (
-    <div className={`rounded-lg border p-3 transition-colors ${
-      a.unlocked
-        ? 'border-gold-500/40 bg-gold-500/5 ring-1 ring-gold-500/30'
-        : 'border-chesscom-200 bg-chesscom-50/40 opacity-70 dark:border-chesscom-700 dark:bg-chesscom-900/40'
-    }`}>
-      <div className="flex items-start gap-2">
-        <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
-          a.unlocked ? 'bg-gold-500/15 text-gold-600' : 'bg-chesscom-100 text-chesscom-400 dark:bg-chesscom-800'
-        }`}>
-          {a.unlocked ? <Icon className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-xs font-semibold">{t(`achievements.${a.id}.title`, { defaultValue: a.title })}</div>
-          <div className="mt-0.5 line-clamp-2 text-[11px] text-chesscom-500">{t(`achievements.${a.id}.description`, { defaultValue: a.description })}</div>
-        </div>
-      </div>
-      <div className="mt-2 flex items-center gap-2">
-        <div className="h-1 flex-1 overflow-hidden rounded-full bg-chesscom-100 dark:bg-chesscom-900">
-          <div className={`h-full ${a.unlocked ? 'bg-gold-500' : 'bg-board-dark/50'}`} style={{ width: `${pct}%` }} />
-        </div>
-        <span className="font-mono text-[11px] tabular-nums text-chesscom-500">{a.progress}/{a.target}</span>
-      </div>
-      {a.unlocked && a.unlocked_at && (
-        <div className="mt-1 text-[11px] text-chesscom-400">{new Date(a.unlocked_at).toLocaleDateString()}</div>
-      )}
+      <section className="space-y-2">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Ladders</h2>
+        <ul className="divide-y divide-white/10 rounded-xl border border-white/10">
+          {ratings.map((rating) => (
+            <li key={rating.timeClass} className="flex items-center justify-between px-4 py-2.5 text-sm">
+              <span className="capitalize text-slate-300">{rating.timeClass}</span>
+              <span className="tabular-nums text-slate-400">
+                {formatRating(rating)} · {rating.gamesPlayed} {rating.gamesPlayed === 1 ? 'game' : 'games'}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </section>
     </div>
   );
 }
 
-function resolveLucide(name: string): React.ComponentType<{ className?: string }> {
-  const lib = Icons as unknown as Record<string, React.ComponentType<{ className?: string }>>;
-  return lib[name] ?? lib.Award ?? Award;
-}
-
-function Skeleton() {
+function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="space-y-4 animate-pulse">
-      <div className="h-7 w-40 rounded bg-chesscom-200 dark:bg-chesscom-700" />
-      <div className="grid gap-4 md:grid-cols-2">
-        <div className="h-28 rounded-xl bg-chesscom-200 dark:bg-chesscom-700" />
-        <div className="h-28 rounded-xl bg-chesscom-200 dark:bg-chesscom-700" />
-      </div>
-      <div className="h-32 rounded-xl bg-chesscom-200 dark:bg-chesscom-700" />
-      <div className="grid gap-4 md:grid-cols-2">
-        <div className="h-40 rounded-xl bg-chesscom-200 dark:bg-chesscom-700" />
-        <div className="h-40 rounded-xl bg-chesscom-200 dark:bg-chesscom-700" />
-      </div>
+    <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
+      <div className="text-xs text-slate-400">{label}</div>
+      <div className="mt-1 text-lg font-semibold">{value}</div>
     </div>
   );
 }
-

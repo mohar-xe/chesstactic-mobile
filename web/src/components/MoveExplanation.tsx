@@ -9,7 +9,6 @@ import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import { Swords } from 'lucide-react';
 import { CLASS_STYLE, GLYPH_SVG } from '../lib/classification';
-import CoachPanel from './CoachPanel';
 import type { AnalyzedMove } from '../types';
 
 /** Lichess win-chance curve (same as the server's cpToWinPct), 0..100 for White. */
@@ -33,14 +32,12 @@ interface Props {
   move: AnalyzedMove;
   /** The player's colour, so the card can say "your move" / "opponent's move". */
   userColor: 'white' | 'black' | null;
-  coachConfigured: boolean;
-  coachRequest: (() => { url: string; body: Record<string, unknown> }) | null;
   /** "Play from here" link for the position after this move (the one on the
    *  board): play on against Patzer. Absent once the game is over. */
   playFrom?: string;
 }
 
-export default function MoveExplanation({ move, userColor, coachConfigured, coachRequest, playFrom }: Props) {
+export default function MoveExplanation({ move, userColor, playFrom }: Props) {
   const { t } = useTranslation();
   const s = CLASS_STYLE[move.classification];
   const side = move.ply % 2 === 1 ? 'white' : 'black';
@@ -90,17 +87,6 @@ export default function MoveExplanation({ move, userColor, coachConfigured, coac
         </Link>
       )}
 
-      <div className="mt-3 border-t border-chesscom-200 pt-2 dark:border-chesscom-700">
-        <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-chesscom-500">{t('review.why.coachSays')}</div>
-        <CoachPanel
-          systemConfigured={coachConfigured}
-          request={coachRequest}
-          autoPlay
-          triggerKey={move.ply}
-          debounceMs={700}
-          compact
-        />
-      </div>
     </div>
   );
 }
