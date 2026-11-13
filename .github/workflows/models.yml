@@ -1,0 +1,60 @@
+name: Model Assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish model assets to'
+        required: false
+        default: 'models'
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    name: Export ONNX models and publish assets
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install export dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install onnx onnxruntime chess maia3 huggingface_hub
+
+      - name: Export and verify models
+        env:
+          HF_HOME: ${{ runner.temp }}/hf
+        run: |
+          set -euo pipefail
+          mkdir -p dist/models
+          for size in 5m 23m 79m; do
+            python tools/export-maia3-onnx/export_onnx.py \
+              --model "maia3-${size}" \
+              --out "dist/models/maia3-${size}.onnx"
+            python tools/export-maia3-onnx/parity_check.py \
+              --onnx "dist/models/maia3-${size}.onnx" \
+              --model "maia3-${size}" \
+              --positions 60
+          done
+
+      - name: Upload model artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: maia3-onnx-models
+          path: dist/models/*.onnx
+
+      - name: Publish models to release tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || 'models' }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" -t "Model assets" -n "Maia-3 ONNX models and related runtime assets."
+          gh release upload "$TAG" dist/models/*.onnx --clobber
