@@ -97,6 +97,46 @@ export default function GameAnalyzer() {
             </div>
           </div>
 
+          {analysis && moves.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/20 disabled:opacity-40"
+                onClick={() => setPly(0)}
+                disabled={ply === 0}
+              >
+                Start
+              </button>
+              <button
+                type="button"
+                className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/20 disabled:opacity-40"
+                onClick={() => setPly((p) => Math.max(0, p - 1))}
+                disabled={ply === 0}
+              >
+                Prev
+              </button>
+              <span className="text-sm text-slate-400">
+                {ply === 0 ? 'Start position' : `Move ${ply} / ${moves.length}`}
+              </span>
+              <button
+                type="button"
+                className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/20 disabled:opacity-40"
+                onClick={() => setPly((p) => Math.min(moves.length, p + 1))}
+                disabled={ply >= moves.length}
+              >
+                Next
+              </button>
+              <button
+                type="button"
+                className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/20 disabled:opacity-40"
+                onClick={() => setPly(moves.length)}
+                disabled={ply >= moves.length}
+              >
+                End
+              </button>
+            </div>
+          )}
+
           {selected && (
             <MoveExplanation move={selected} userColor={game.userColor} />
           )}

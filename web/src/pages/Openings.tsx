@@ -20,6 +20,7 @@ export default function Openings() {
   const [due, setDue] = useState<OpeningMissRecord[]>([]);
   const [summary, setSummary] = useState({ due: 0, learning: 0, learned: 0 });
   const [family, setFamily] = useState<string>('All');
+  const [reviewMode, setReviewMode] = useState(false);
 
   const refresh = useCallback(async () => {
     setMisses(await listMisses());
@@ -41,13 +42,38 @@ export default function Openings() {
     [lines, family],
   );
 
-  function start(selected: TrainerLine, side: Color) {
+  function start(selected: TrainerLine, side: Color, atPly = 0, fromReview = false) {
+    const chess = new Chess();
+    let lm: [Key, Key] | undefined;
+    for (let i = 0; i < atPly; i += 1) {
+      const m = selected.moves[i];
+      if (!m) break;
+      try {
+        chess.move({ from: m.uci.slice(0, 2), to: m.uci.slice(2, 4), promotion: m.uci.slice(4) || undefined });
+        lm = [m.uci.slice(0, 2) as Key, m.uci.slice(2, 4) as Key];
+      } catch {
+        break;
+      }
+    }
     setLine(selected);
     setColor(side);
-    setPly(0);
-    setFen(new Chess().fen());
-    setLastMove(undefined);
-    setFeedback(null);
+    setPly(atPly);
+    setFen(chess.fen());
+    setLastMove(lm);
+    setFeedback(fromReview ? { kind: 'good', text: 'Review this missed position.' } : null);
+    setReviewMode(fromReview);
+  }
+
+  function startMiss(miss: OpeningMissRecord) {
+    const parts = miss.id.split(':');
+    if (parts.length < 3) return;
+    const side = parts[parts.length - 1] as Color;
+    const missPly = Number(parts[parts.length - 2]);
+    const lineId = parts.slice(0, -2).join(':');
+    if (!Number.isFinite(missPly)) return;
+    const found = lines.find((l) => l.id === lineId) ?? lines.find((l) => l.name === miss.lineName);
+    if (!found) return;
+    start(found, side, missPly, true);
   }
 
   async function onMove(uci: string) {
@@ -98,7 +124,15 @@ export default function Openings() {
         setTimeout(() => {
           setFen(after.fen());
           setLastMove([reply.uci.slice(0, 2) as Key, reply.uci.slice(2, 4) as Key]);
-          setPly(ply + 2);
+          const nextPly = ply + 2;
+          setPly(nextPly);
+          if (reviewMode) {
+            setFeedback({ kind: 'good', text: 'Miss reviewed. Returning to the list…' });
+            setTimeout(() => {
+              setLine(null);
+              setReviewMode(false);
+            }, 700);
+          }
         }, 400);
       } catch {
         setPly(ply + 1);
@@ -109,6 +143,12 @@ export default function Openings() {
     setTimeout(() => {
       setPly(ply + 1);
       setFeedback({ kind: 'good', text: 'Line complete.' });
+      if (reviewMode) {
+        setTimeout(() => {
+          setLine(null);
+          setReviewMode(false);
+        }, 700);
+      }
     }, 400);
   }
 
@@ -215,13 +255,23 @@ export default function Openings() {
           <div className="font-medium">
             {summary.due} opening {summary.due === 1 ? 'miss' : 'misses'} to review
           </div>
-          <ul className="mt-2 space-y-1 text-xs text-slate-400">
-            {due.slice(0, 5).map((miss) => (
+          <ul className="mt-2 space-y-1 text-slate-300">
+            {(due.length > 0 ? due : misses).slice(0, 8).map((miss) => (
               <li key={miss.id}>
-                {miss.lineName} — expected {miss.expectedSan} ({miss.misses}×
+                <button
+                  type="button"
+                  className="w-full rounded-md px-2 py-1 text-left hover:bg-white/10"
+                  onClick={() => startMiss(miss)}
+                >
+                  <span className="font-medium">{miss.lineName}</span>
+                  <span className="text-slate-400"> — expected {miss.expectedSan} ({miss.misses}×)</span>
+                </button>
               </li>
             ))}
           </ul>
+          {due.length === 0 && misses.length > 0 && (
+            <p className="mt-2 text-xs text-slate-500">No misses due now; you can still review recent ones.</p>
+          )}
         </section>
       )}
 
