@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { ponderToSeconds, valueToWdl } from './index';
 import { sampleFromLogits, softmax } from './sampler';
 import { baseMoveIndex, moveLogitIndex, promotionMoveIndex, squareIndex } from './vocab';
 
@@ -40,5 +41,21 @@ describe('vocab mapping', () => {
     const idx = promotionMoveIndex(squareIndex('e7'), squareIndex('e8'), 'q');
     expect(idx).toBeGreaterThanOrEqual(4096);
     expect(moveLogitIndex('e7e8q', false)).toBe(idx);
+  });
+});
+
+describe('value and ponder heads', () => {
+  it('converts value logits to a WDL distribution', () => {
+    const wdl = valueToWdl(new Float32Array([0, 0, 5]));
+    expect(wdl.win).toBeGreaterThan(wdl.draw);
+    expect(wdl.win).toBeGreaterThan(wdl.loss);
+    expect(wdl.win + wdl.draw + wdl.loss).toBeCloseTo(1, 6);
+  });
+
+  it('accepts ponder values only in a plausible range', () => {
+    expect(ponderToSeconds(Math.log(2))).toBeCloseTo(2, 6);
+    expect(ponderToSeconds(Math.log(0.01))).toBeNull();
+    expect(ponderToSeconds(Math.log(500))).toBeNull();
+    expect(ponderToSeconds(Number.NaN)).toBeNull();
   });
 });
