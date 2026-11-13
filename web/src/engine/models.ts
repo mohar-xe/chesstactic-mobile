@@ -168,9 +168,13 @@ export async function downloadModel(
 async function storeModel(id: EngineTierId, bytes: ArrayBuffer): Promise<void> {
   if (isNative()) {
     const { Filesystem, Directory } = await import('@capacitor/filesystem');
-    const path = `${Directory.Data}/models/${id}.onnx`;
-    await Filesystem.mkdir({ path: `${Directory.Data}/models`, recursive: true });
-    await Filesystem.writeFile({ path, data: toBase64(bytes) });
+    await Filesystem.mkdir({ path: 'models', directory: Directory.Data, recursive: true });
+    await Filesystem.writeFile({
+      path: `models/${id}.onnx`,
+      directory: Directory.Data,
+      data: toBase64(bytes),
+      recursive: true,
+    });
     return;
   }
   await putModelRow(id, bytes);
@@ -192,8 +196,11 @@ export async function modelFilePath(id: EngineTierId): Promise<string | null> {
   if (!isNative()) return null;
   const { Filesystem, Directory } = await import('@capacitor/filesystem');
   try {
-    const res = await Filesystem.getUri({ path: `${Directory.Data}/models/${id}.onnx`, directory: Directory.Data });
-    return res.uri;
+    const res = await Filesystem.getUri({ path: `models/${id}.onnx`, directory: Directory.Data });
+    const uri = res.uri ?? null;
+    if (!uri) return null;
+    if (uri.startsWith('file://')) return decodeURIComponent(uri.replace('file://', ''));
+    return uri;
   } catch {
     return null;
   }
@@ -207,7 +214,15 @@ export async function modelBytes(id: EngineTierId): Promise<ArrayBuffer | null> 
 }
 
 export async function isModelInstalled(id: EngineTierId): Promise<boolean> {
-  if (isNative()) return (await modelFilePath(id)) !== null;
+  if (isNative()) {
+    const { Filesystem, Directory } = await import('@capacitor/filesystem');
+    try {
+      await Filesystem.stat({ path: `models/${id}.onnx`, directory: Directory.Data });
+      return true;
+    } catch {
+      return false;
+    }
+  }
   return (await getModelRow(id)) !== undefined;
 }
 
@@ -215,7 +230,7 @@ export async function deleteModel(id: EngineTierId): Promise<void> {
   if (isNative()) {
     const { Filesystem, Directory } = await import('@capacitor/filesystem');
     try {
-      await Filesystem.deleteFile({ path: `${Directory.Data}/models/${id}.onnx` });
+      await Filesystem.deleteFile({ path: `models/${id}.onnx`, directory: Directory.Data });
     } catch {
       /* already gone */
     }
