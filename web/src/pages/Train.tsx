@@ -91,6 +91,8 @@ export default function Train() {
     }
 
     // Wrong move: say what was expected and put the position back.
+    setFen(fenBefore);
+    setLastMove(undefined);
     setFeedback({
       kind: 'bad',
       text: `Not quite — the move here was ${sanOf(fenBefore, expected) ?? expected}.`,

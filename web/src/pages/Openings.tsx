@@ -70,6 +70,8 @@ export default function Openings() {
     if (!played) return;
 
     if (uci !== expected.uci) {
+      setFen(fenBefore);
+      setLastMove(undefined);
       setFeedback({
         kind: 'bad',
         text: `That is ${played.san}. The line continues with ${expected.san}.`,

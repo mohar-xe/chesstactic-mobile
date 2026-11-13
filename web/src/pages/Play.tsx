@@ -9,6 +9,7 @@ import {
   DIFFICULTY_TIERS, DEFAULT_DIFFICULTY, adaptiveBotElo, clampEloForModel,
   playerEloFor, temperatureFor, topPFor, type DifficultyId,
 } from '../game/difficulty';
+import { isModelInstalled } from '../engine/models';
 import { useMaiaEngine } from '../engine/maia3/useMaia';
 import { useProfile } from '../storage/profile';
 import { recordRatedGame, ratingPoolFor, getRating } from '../game/rating';
@@ -48,9 +49,19 @@ export default function Play() {
   const [savedGameId, setSavedGameId] = useState<string | null>(null);
   const [ratingChange, setRatingChange] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [modelInstalled, setModelInstalled] = useState<boolean | null>(null);
 
   const { engine, status: engineStatus, error: engineError } = useMaiaEngine(modelId);
   const botThinkingRef = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setModelInstalled(null);
+    void isModelInstalled(modelId).then((installed) => {
+      if (!cancelled) setModelInstalled(installed);
+    });
+    return () => { cancelled = true; };
+  }, [modelId]);
 
   useEffect(() => {
     updateProfile({ engineTier: modelId });
@@ -94,7 +105,12 @@ export default function Play() {
   }, [session, color, timeControl, modelId, rated]);
 
   const start = useCallback(async () => {
-    if (!engine) return;
+    if (!engine) {
+      if (modelInstalled === false) {
+        setError('Selected Maia model is not installed. Download it from Models first.');
+      }
+      return;
+    }
     setError(null);
     setMoves([]);
     setSavedGameId(null);
@@ -247,13 +263,28 @@ export default function Play() {
           Rated — count this game towards your local rating
         </label>
 
+        {modelInstalled === false && (
+          <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+            The selected model is not installed. <Link to="/models" className="underline hover:text-amber-100">Download it in Models</Link> to play against Maia.
+          </div>
+        )}
+        {engineStatus === 'loading' && modelInstalled !== false && (
+          <div className="flex items-center gap-2 text-sm text-slate-400">
+            <Spinner inline /> Loading Maia engine…
+          </div>
+        )}
+        {(engineError || error) && (
+          <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+            {error ?? engineError}
+          </div>
+        )}
         <button
           type="button"
           onClick={() => void start()}
-          disabled={!engine}
+          disabled={!engine || modelInstalled === false || engineStatus === 'loading'}
           className="w-full rounded-xl bg-[#ffc934] px-4 py-3 font-semibold text-black disabled:opacity-50"
         >
-          Start game
+          {engineStatus === 'loading' ? 'Loading engine…' : 'Start game'}
         </button>
       </div>
     );
