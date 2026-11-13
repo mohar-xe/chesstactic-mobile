@@ -13,6 +13,7 @@ export default function Models() {
   const [progress, setProgress] = useState<Record<string, number>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [controllers, setControllers] = useState<Record<string, AbortController>>({});
 
   const refresh = useCallback(async () => {
     const map: Record<string, boolean> = {};
@@ -27,20 +28,38 @@ export default function Models() {
   }, [refresh]);
 
   async function install(id: EngineTierId) {
+    const controller = new AbortController();
+    setControllers((prev) => ({ ...prev, [id]: controller }));
     setBusy(id);
     setError(null);
     try {
-      await downloadModel(id, (p) => setProgress((prev) => ({ ...prev, [id]: p.ratio })));
+      await downloadModel(
+        id,
+        (p) => setProgress((prev) => ({ ...prev, [id]: p.ratio })),
+        { signal: controller.signal },
+      );
       setProgress((prev) => ({ ...prev, [id]: 1 }));
       await refresh();
       const list = new Set(profile.installedModels);
       list.add(id);
       await updateProfile({ installedModels: [...list] });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (!(err instanceof DOMException && err.name === 'AbortError')) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+      setProgress((prev) => ({ ...prev, [id]: 0 }));
     } finally {
-      setBusy(null);
+      setControllers((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      setBusy((current) => (current === id ? null : current));
     }
+  }
+
+  function cancel(id: EngineTierId) {
+    controllers[id]?.abort();
   }
 
   async function remove(id: EngineTierId) {
@@ -114,14 +133,24 @@ export default function Models() {
                       </button>
                     </>
                   ) : (
-                    <button
-                      type="button"
-                      className="rounded-lg bg-[#ffc934] px-3 py-1.5 text-sm font-medium text-black disabled:opacity-50"
-                      onClick={() => void install(model.id)}
-                      disabled={busy === model.id}
-                    >
-                      {busy === model.id ? `${Math.round(ratio * 100)}%` : `Download (${model.sizeMb} MB)`}
-                    </button>
+                    busy === model.id ? (
+                      <button
+                        type="button"
+                        className="rounded-lg bg-white/10 px-3 py-1.5 text-sm hover:bg-white/20"
+                        onClick={() => cancel(model.id)}
+                      >
+                        Cancel ({Math.round(ratio * 100)}%)
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="rounded-lg bg-[#ffc934] px-3 py-1.5 text-sm font-medium text-black disabled:opacity-50"
+                        onClick={() => void install(model.id)}
+                        disabled={busy !== null}
+                      >
+                        Download ({model.sizeMb} MB)
+                      </button>
+                    )
                   )}
                 </div>
               </div>

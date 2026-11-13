@@ -118,9 +118,10 @@ export class ModelDownloadError extends Error {}
 export async function downloadModel(
   id: EngineTierId,
   onProgress?: (progress: DownloadProgress) => void,
+  opts: { signal?: AbortSignal } = {},
 ): Promise<void> {
   const url = modelAssetUrl(id);
-  const response = await fetch(url);
+  const response = await fetch(url, { signal: opts.signal });
   if (!response.ok) {
     throw new ModelDownloadError(`Could not download ${url} (HTTP ${response.status})`);
   }
@@ -136,15 +137,24 @@ export async function downloadModel(
 
   const chunks: Uint8Array[] = [];
   let received = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (value) {
-      chunks.push(value);
-      received += value.length;
-      onProgress?.({ received, total, ratio: total ? received / total : 0 });
+  try {
+    for (;;) {
+      if (opts.signal?.aborted) throw new DOMException('Download cancelled', 'AbortError');
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        chunks.push(value);
+        received += value.length;
+        onProgress?.({ received, total, ratio: total ? received / total : 0 });
+      }
+    }
+  } finally {
+    if (opts.signal?.aborted) {
+      try { await reader.cancel(); } catch { /* ignore */ }
     }
   }
+
+  if (opts.signal?.aborted) throw new DOMException('Download cancelled', 'AbortError');
 
   const merged = new Uint8Array(received);
   let offset = 0;
