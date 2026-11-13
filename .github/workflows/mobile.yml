@@ -1,23 +1,30 @@
 name: Mobile (Android APK)
 
 on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       release_tag:
         description: 'GitHub release tag to upload the APK to (optional)'
         required: false
         type: string
-  push:
-    tags:
-      - 'v*'
 
 permissions:
   contents: write
 
+concurrency:
+  group: mobile-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   android:
     runs-on: ubuntu-latest
-    name: Build signed Android APK
+    name: Compile Android APK
     steps:
       - uses: actions/checkout@v4
 
@@ -33,9 +40,12 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK/NDK components
+      - name: Install Android SDK components
         run: |
-          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125"
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Install dependencies
         run: npm ci
@@ -48,9 +58,12 @@ jobs:
       - name: Sync Capacitor Android project
         run: npx cap sync android
 
-      - name: Build release APK
+      - name: Make Gradle wrapper executable
+        run: chmod +x android/gradlew
+
+      - name: Compile release APK
         working-directory: android
-        run: ./gradlew assembleRelease
+        run: ./gradlew :app:assembleRelease --stacktrace
 
       - name: Sign APK
         if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' }}
@@ -70,7 +83,7 @@ jobs:
             --out patzer-release.apk "$APK"
           "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify patzer-release.apk
 
-      - name: Use unsigned APK when signing secrets are unavailable
+      - name: Collect unsigned APK
         if: ${{ env.ANDROID_KEYSTORE_BASE64 == '' }}
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -83,12 +96,14 @@ jobs:
         with:
           name: android-apk
           path: patzer-release*.apk
+          if-no-files-found: error
 
       - name: Publish APK to GitHub Release
-        if: ${{ github.event_name == 'push' || inputs.release_tag != '' }}
+        if: ${{ startsWith(github.ref, 'refs/tags/') || inputs.release_tag != '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ inputs.release_tag }}"
           if [ -z "$TAG" ]; then TAG="${GITHUB_REF_NAME}"; fi
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" -t "$TAG" -n "Automated Android build artifacts."
           gh release upload "$TAG" patzer-release*.apk --clobber
