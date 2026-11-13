@@ -68,41 +68,45 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x android/gradlew
 
-      - name: Compile release APK
+      - name: Compile debug APK
+        working-directory: android
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Compile release APK (optional)
         working-directory: android
         run: ./gradlew :app:assembleRelease --stacktrace
 
-      - name: Sign APK
-        if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' }}
+      - name: Collect APKs
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
-          APK=$(ls android/app/build/outputs/apk/release/*.apk | head -n 1)
-          apksigner sign \
-            --ks "$RUNNER_TEMP/release.keystore" \
-            --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
-            --key-pass env:ANDROID_KEY_PASSWORD \
-            --ks-key-alias "$ANDROID_KEY_ALIAS" \
-            --out patzer-release.apk "$APK"
-          apksigner verify patzer-release.apk
+          DEBUG_APK=$(ls android/app/build/outputs/apk/debug/*.apk | head -n 1)
+          cp "$DEBUG_APK" patzer-debug.apk
 
-      - name: Collect unsigned APK
-        if: ${{ env.ANDROID_KEYSTORE_BASE64 == '' }}
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        run: |
-          APK=$(ls android/app/build/outputs/apk/release/*.apk | head -n 1)
-          cp "$APK" patzer-release-unsigned.apk
+          RELEASE_APK=$(ls android/app/build/outputs/apk/release/*.apk | head -n 1)
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            apksigner sign \
+              --ks "$RUNNER_TEMP/release.keystore" \
+              --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
+              --key-pass env:ANDROID_KEY_PASSWORD \
+              --ks-key-alias "$ANDROID_KEY_ALIAS" \
+              --out patzer-release.apk "$RELEASE_APK"
+            apksigner verify patzer-release.apk
+          else
+            cp "$RELEASE_APK" patzer-release-unsigned.apk
+          fi
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: android-apk
-          path: patzer-release*.apk
+          path: |
+            patzer-debug.apk
+            patzer-release*.apk
           if-no-files-found: error
 
       - name: Publish APK to GitHub Release
@@ -113,4 +117,4 @@ jobs:
           TAG="${{ inputs.release_tag }}"
           if [ -z "$TAG" ]; then TAG="${GITHUB_REF_NAME}"; fi
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" -t "$TAG" -n "Automated Android build artifacts."
-          gh release upload "$TAG" patzer-release*.apk --clobber
+          gh release upload "$TAG" patzer-debug.apk patzer-release*.apk --clobber
