@@ -143,7 +143,11 @@ public class MaiaNativePlugin extends Plugin {
 
   private static JSArray toJSArray(float[] values) {
     JSArray arr = new JSArray();
-    for (float v : values) arr.put((double) v);
+    try {
+      for (float v : values) arr.put((double) v);
+    } catch (Exception e) {
+      throw new RuntimeException("Failed to build JSArray", e);
+    }
     return arr;
   }
 
